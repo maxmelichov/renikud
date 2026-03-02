@@ -30,3 +30,8 @@ torch = [
 members = [
     "renikud-onnx",
 ]
+
+[dependency-groups]
+dev = [
+    "huggingface-hub>=1.5.0",
+]
