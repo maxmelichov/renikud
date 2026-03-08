@@ -32,6 +32,12 @@ See `renikud-onnx/` for the ONNX runtime package. Export a trained checkpoint wi
 uv run renikud-onnx/scripts/export.py --checkpoint outputs/g2p-augmented/checkpoint-1500 --output model.onnx
 ```
 
+## Upload Checkpoint to HuggingFace
+
+```console
+uv run huggingface-cli upload thewh1teagle/renikud outputs/g2p-mixed3-highlr/checkpoint-18000 checkpoint-18000 --include "model.safetensors" --include "trainer_state.json" --commit-message "add checkpoint-18000 weights"
+```
+
 ## Documentation
 
-See `docs/ARCHITECTURE.md`.
+See `docs/ARCHITECTURE.md` and `docs/EVALUATION.md`.

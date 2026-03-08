@@ -81,10 +81,13 @@ def main():
         print(f"   GT:    {ex['gt']}")
         print(f"   Pred:  {ex['pred']}")
 
+    mean_wer = sum(jiwer.wer(r, h) for r, h in zip(refs, hyps)) / len(refs)
+    mean_cer = sum(jiwer.cer(r, h) for r, h in zip(refs, hyps)) / len(refs)
+
     print(f"\nResults ({len(gt_data)} samples):")
-    print(f"  CER: {jiwer.cer(refs, hyps):.4f}")
-    print(f"  WER: {jiwer.wer(refs, hyps):.4f}")
-    print(f"  Acc: {1 - jiwer.wer(refs, hyps):.1%}")
+    print(f"  CER: {mean_cer:.4f}")
+    print(f"  WER: {mean_wer:.4f}")
+    print(f"  Acc: {1 - mean_wer:.1%}")
 
 
 if __name__ == "__main__":
