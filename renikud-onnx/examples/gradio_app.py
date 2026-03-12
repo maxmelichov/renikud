@@ -12,6 +12,7 @@
 Minimal Gradio demo for renikud-onnx.
 
 Usage:
+    wget https://huggingface.co/thewh1teagle/renikud/resolve/main/model.onnx
     uv run examples/gradio_app.py
 """
 
