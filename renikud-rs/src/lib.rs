@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use half::f16;
 use ort::session::Session;
 use ort::value::Tensor;
 use unicode_normalization::UnicodeNormalization;
@@ -84,14 +83,14 @@ impl G2P {
             "attention_mask" => attention_mask
         ])?;
 
-        let (cons_shape, cons_data) = outputs["consonant_logits"].try_extract_tensor::<f16>()?;
-        let (vowel_shape, vowel_data) = outputs["vowel_logits"].try_extract_tensor::<f16>()?;
-        let (_, stress_data) = outputs["stress_logits"].try_extract_tensor::<f16>()?;
+        let (cons_shape, cons_data) = outputs["consonant_logits"].try_extract_tensor::<f32>()?;
+        let (vowel_shape, vowel_data) = outputs["vowel_logits"].try_extract_tensor::<f32>()?;
+        let (_, stress_data) = outputs["stress_logits"].try_extract_tensor::<f32>()?;
 
         let num_consonants = cons_shape[2] as usize;
         let num_vowels = vowel_shape[2] as usize;
 
-        let argmax = |data: &[f16], offset: usize, size: usize| -> i64 {
+        let argmax = |data: &[f32], offset: usize, size: usize| -> i64 {
             data[offset..offset + size]
                 .iter()
                 .enumerate()
