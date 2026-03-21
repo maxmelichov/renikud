@@ -72,12 +72,11 @@ def _best_stress_per_word(offset_mapping: list[tuple[int, int]], text: str, stre
                 words[word_idx].append(tok_idx)
                 break
 
-    # Per word: keep only the highest-confidence stress prediction
+    # Per word: pick the token with the highest stress score (every word must have exactly one stress)
     stressed: set[int] = set()
     for toks in words.values():
-        candidates = [t for t in toks if stress_logits[t].argmax().item() == STRESS_YES]
-        if candidates:
-            stressed.add(max(candidates, key=lambda t: stress_logits[t, STRESS_YES].item()))
+        if toks:
+            stressed.add(max(toks, key=lambda t: stress_logits[t, STRESS_YES].item()))
     return stressed
 
 
