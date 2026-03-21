@@ -143,6 +143,11 @@ def process_sentence(
             consonant_labels[tok_idx] = CONSONANT_TO_ID.get(consonant, IGNORE_INDEX)
             vowel_labels[tok_idx] = VOWEL_TO_ID.get(vowel, IGNORE_INDEX)
             stress_labels[tok_idx] = stress
+        elif not is_hebrew_letter(hebrew[char_idx]) and hebrew[char_idx] != " ":
+            # Non-Hebrew, non-space char (e.g. apostrophe in ג'/צ'/ז') — train model to emit nothing
+            consonant_labels[tok_idx] = CONSONANT_TO_ID["∅"]
+            vowel_labels[tok_idx] = VOWEL_TO_ID["∅"]
+            stress_labels[tok_idx] = STRESS_NONE
 
     return {
         "input_ids": input_ids,
