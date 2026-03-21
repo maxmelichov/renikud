@@ -53,36 +53,50 @@ def build_tokenizer_vocab(tokenizer) -> dict[int, str]:
     return {v: k for k, v in vocab.items()}
 
 
-def phonemize(text: str, model: HebrewG2PClassifier, tokenizer, device: torch.device, max_len: int) -> str:
-    """Convert unvocalized Hebrew text to IPA using the classifier model."""
-    encoding = tokenizer(
-        text,
-        truncation=True,
-        max_length=max_len,
-        return_offsets_mapping=True,
-        return_tensors="pt",
-    )
-    offset_mapping = encoding.pop("offset_mapping")[0]  # [S, 2]
-    input_ids = encoding["input_ids"].to(device)
-    attention_mask = encoding["attention_mask"].to(device)
+def _best_stress_per_word(offset_mapping: list[tuple[int, int]], text: str, stress_logits: torch.Tensor) -> set[int]:
+    """
+    For each whitespace-delimited word, pick at most one token index to carry stress —
+    the one with the highest stress logit score among those that predicted stress.
+    Returns a set of token indices that are allowed to emit stress.
+    """
+    import re
+    # Group single-char token indices by word span
+    word_spans = [(m.start(), m.end()) for m in re.finditer(r"\S+", text)]
+    words: dict[int, list[int]] = {i: [] for i in range(len(word_spans))}
 
-    tokenizer_vocab = build_tokenizer_vocab(tokenizer)
+    for tok_idx, (start, end) in enumerate(offset_mapping):
+        if end - start != 1:
+            continue
+        for word_idx, (ws, we) in enumerate(word_spans):
+            if ws <= start < we:
+                words[word_idx].append(tok_idx)
+                break
 
-    with torch.no_grad():
-        out = model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            tokenizer_vocab=tokenizer_vocab,
-        )
+    # Per word: keep only the highest-confidence stress prediction
+    stressed: set[int] = set()
+    for toks in words.values():
+        candidates = [t for t in toks if stress_logits[t].argmax().item() == STRESS_YES]
+        if candidates:
+            stressed.add(max(candidates, key=lambda t: stress_logits[t, STRESS_YES].item()))
+    return stressed
 
-    consonant_preds = out["consonant_logits"][0].argmax(dim=-1)  # [S]
-    vowel_preds = out["vowel_logits"][0].argmax(dim=-1)           # [S]
-    stress_preds = out["stress_logits"][0].argmax(dim=-1)         # [S]
+
+def _decode(
+    text: str,
+    offset_mapping: list[tuple[int, int]],
+    consonant_logits: torch.Tensor,
+    vowel_logits: torch.Tensor,
+    stress_logits: torch.Tensor,
+) -> str:
+    """Decode per-token logits into an IPA string."""
+    consonant_preds = consonant_logits.argmax(dim=-1)  # [S]
+    vowel_preds = vowel_logits.argmax(dim=-1)           # [S]
+    stressed_positions = _best_stress_per_word(offset_mapping, text, stress_logits)
 
     result = []
     prev_char_end = 0
 
-    for tok_idx, (start, end) in enumerate(offset_mapping.tolist()):
+    for tok_idx, (start, end) in enumerate(offset_mapping):
         # Pass through any characters skipped by the tokenizer
         if start > prev_char_end:
             result.append(text[prev_char_end:start])
@@ -104,15 +118,13 @@ def phonemize(text: str, model: HebrewG2PClassifier, tokenizer, device: torch.de
         # Get predictions
         consonant = ID_TO_CONSONANT.get(int(consonant_preds[tok_idx]), "∅")
         vowel = ID_TO_VOWEL.get(int(vowel_preds[tok_idx]), "∅")
-        stress = int(stress_preds[tok_idx]) == STRESS_YES
+        stress = tok_idx in stressed_positions
 
         # Apply per-letter consonant constraint at inference
         allowed = HEBREW_LETTER_TO_ALLOWED_CONSONANTS.get(char, (CONSONANT_TO_ID["∅"],))
-        consonant_id = CONSONANT_TO_ID.get(consonant, 0)
-        if consonant_id not in allowed:
+        if CONSONANT_TO_ID.get(consonant, 0) not in allowed:
             # Fall back to most probable allowed consonant
-            logits = out["consonant_logits"][0, tok_idx]
-            for cid in sorted(allowed, key=lambda x: -logits[x].item()):
+            for cid in sorted(allowed, key=lambda x: -consonant_logits[tok_idx, x].item()):
                 consonant = ID_TO_CONSONANT[cid]
                 break
 
@@ -133,6 +145,35 @@ def phonemize(text: str, model: HebrewG2PClassifier, tokenizer, device: torch.de
         result.append(text[prev_char_end:])
 
     return "".join(result)
+
+
+def phonemize(text: str, model: HebrewG2PClassifier, tokenizer, device: torch.device, max_len: int) -> str:
+    """Convert unvocalized Hebrew text to IPA using the classifier model."""
+    encoding = tokenizer(
+        text,
+        truncation=True,
+        max_length=max_len,
+        return_offsets_mapping=True,
+        return_tensors="pt",
+    )
+    offset_mapping = encoding.pop("offset_mapping")[0].tolist()  # [S, 2]
+    input_ids = encoding["input_ids"].to(device)
+    attention_mask = encoding["attention_mask"].to(device)
+
+    with torch.no_grad():
+        out = model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            tokenizer_vocab=build_tokenizer_vocab(tokenizer),
+        )
+
+    return _decode(
+        text=text,
+        offset_mapping=offset_mapping,
+        consonant_logits=out["consonant_logits"][0],
+        vowel_logits=out["vowel_logits"][0],
+        stress_logits=out["stress_logits"][0],
+    )
 
 
 def main():
