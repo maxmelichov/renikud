@@ -110,8 +110,11 @@ def _decode(
         prev_char_end = end
 
         if not is_hebrew_letter(char):
-            # Non-Hebrew: pass through as-is
-            result.append(char)
+            # Skip geresh apostrophe after letters that use it as a digraph marker
+            if char == "'" and start > 0 and text[start - 1] in "גזצץ":
+                pass
+            else:
+                result.append(char)
             continue
 
         # Get predictions
