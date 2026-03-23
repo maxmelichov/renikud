@@ -24,13 +24,14 @@ uv run src/train.py \
   --eval-dataset dataset/.cache/val \
   --output-dir outputs/my-run \
   --epochs 1 \
-  --encoder-lr 2e-6 \
-  --head-lr 1e-5 \
-  --train-batch-size 32 \
+  --encoder-lr 1e-5 \
+  --head-lr 5e-5 \
+  --train-batch-size 128 \
   --gradient-accumulation-steps 1 \
   --warmup-steps 200 \
   --logging-steps 50 \
-  --save-steps 200
+  --save-steps 200 \
+  --mixed-precision bf16
 ```
 
 ### Fine-tuning from a checkpoint
@@ -46,10 +47,16 @@ uv run src/train.py \
   --epochs 1
 ```
 
+## Mixed Precision
+
+`--mixed-precision` accepts `no`, `fp16`, or `bf16` (default: `bf16` if supported, else `fp16`). `GradScaler` is only active for `fp16`; `bf16` does not need loss scaling.
+
 ## Learning Rates
 
-- `--encoder-lr 2e-6` — safe for fine-tuning the 300M param DictaBERT encoder
-- `--head-lr 1e-5` — higher LR for the three classification heads
+- `--encoder-lr 1e-5` — LR for the NeoBERT encoder layers
+- `--head-lr 5e-5` — higher LR for the three classification heads
+
+RMSNorm parameters (`attention_norm.weight`, `ffn_norm.weight`, `layer_norm.weight`) and biases receive no weight decay.
 
 ## Data Format
 

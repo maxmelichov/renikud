@@ -1,4 +1,6 @@
-# From https://github.com/facebookresearch/llama/blob/main/llama/model.py
+"""
+Rotary embeddings from https://github.com/facebookresearch/llama/blob/main/llama/model.py
+"""
 
 import torch
 from typing import Tuple

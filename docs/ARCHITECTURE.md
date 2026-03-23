@@ -24,6 +24,7 @@ The model is a **per-character classifier**: each Hebrew letter independently pr
 ## Project Layout
 
 - `src/` — application code: alignment, tokenization, modeling, training, and inference
+- `src/encoder/` — NeoBERT architecture (`neobert.py`) and rotary embedding utilities (`rotary.py`)
 - `dataset/` — alignment JSONL files and tokenized Arrow caches
 - `docs/` — design and operational documentation
 - `plans/` — research notes and experiments
@@ -45,14 +46,19 @@ Defined in `src/constants.py`.
 
 Defined in `src/model.py` as `HebrewG2PClassifier`.
 
+The encoder is **NeoBERT** (`src/encoder/neobert.py`) — a modern BERT variant using RoPE positional embeddings, SwiGLU FFN, and RMSNorm instead of the original BERT's sinusoidal positions, GELU FFN, and LayerNorm. The NeoBERT architecture is initialized with DictaBERT's character embedding weights transplanted in; all other transformer weights are trained from scratch.
+
 Pipeline:
 
-1. Encode with `dicta-il/dictabert-large-char-menaked` (300M param character-level BERT)
-2. Three linear classification heads on top of encoder hidden states:
+1. Embed with DictaBERT's pre-trained character embedding weights (vocabulary unchanged)
+2. Encode with NeoBERT transformer layers (RoPE, SwiGLU, RMSNorm)
+3. Three linear classification heads on top of encoder hidden states:
    - **Consonant head**: projects to 25 consonant classes + ∅
    - **Vowel head**: projects to 6 vowel classes + ∅ + aχ
    - **Stress head**: projects to 2 classes (none / stressed)
-3. Per-letter consonant masking: before argmax, logits for impossible consonants are set to `-1e9` using `HEBREW_LETTER_TO_ALLOWED_CONSONANTS`
+4. Per-letter consonant masking: before argmax, logits for impossible consonants are set to `-1e9` using `HEBREW_LETTER_TO_ALLOWED_CONSONANTS`
+
+Flash Attention is used automatically when `cu_seqlens` are provided (packed sequences); falls back to PyTorch SDPA otherwise.
 
 ## Label Alignment
 
@@ -66,11 +72,12 @@ Defined in `src/train.py`.
 
 Key features:
 
-- Discriminative learning rates: separate LRs for encoder vs. heads via `parameter_groups()`
+- Discriminative learning rates: separate LRs for encoder vs. heads via `parameter_groups()`; no-decay set targets NeoBERT's RMSNorm params (`attention_norm.weight`, `ffn_norm.weight`, `layer_norm.weight`)
 - Cosine schedule with linear warmup (`--warmup-steps`)
 - Optional encoder freeze for the first N steps (`--freeze-encoder-steps`)
 - Weight-only initialization via `--init-from-checkpoint` (loads weights, resets optimizer)
-- Mixed precision (`fp16`) with grad scaler
+- Mixed precision via `--mixed-precision {no,fp16,bf16}`; `GradScaler` is only enabled for `fp16`
+- Sequence packing via `ClassifierDataCollator`: multiple sentences are concatenated into one packed sequence with `cu_seqlens` for Flash Attention
 - Checkpoints saved as `model.safetensors` + `train_state.json`; oldest pruned beyond `--save-total-limit`
 
 ## Inference
