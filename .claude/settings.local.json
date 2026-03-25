@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C /home/maxm/renikud show remotes/origin/renikud-experiment-v4-ctc-g2p:phonikud-byt5/README.md)",
+      "Bash(git -C /home/maxm/renikud show origin/renikud-experiment-v4-ctc-g2p:phonikud-byt5/README.md)",
+      "Bash(git -C /home/maxm/renikud show origin/renikud-experiment-v4-ctc-g2p:phonikud-byt5/pyproject.toml)",
+      "Bash(git -C /home/maxm/renikud ls-tree -r origin/renikud-experiment-v4-ctc-g2p --name-only)",
+      "Bash(git -C /home/maxm/renikud show origin/renikud-experiment-v4-ctc-g2p:src/train.py)",
+      "Bash(git -C /home/maxm/renikud show origin/renikud-experiment-v4-ctc-g2p:src/config.py)",
+      "Bash(git -C /home/maxm/renikud show origin/renikud-experiment-v4-ctc-g2p:src/data.py)",
+      "Bash(git -C /home/maxm/renikud show origin/renikud-experiment-v4-ctc-g2p:src/evaluate.py)"
+    ]
+  }
+}

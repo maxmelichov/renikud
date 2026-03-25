@@ -14,5 +14,6 @@ uv run src/train.py \
   --encoder-lr     2e-5 \
   --head-lr        1e-4 \
   --save-steps     500 \
-  --max-steps      20000 \
-  --wandb-mode     disabled
+  --max-steps                20000 \
+  --early-stopping-patience  40 \
+  --wandb-mode               disabled

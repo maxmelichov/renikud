@@ -118,8 +118,13 @@ def main():
     global_step = 0
     opt_step = 0
     optimizer.zero_grad()
+    best_wer = float("inf")
+    no_improve_count = 0
+    stop_training = False
 
     for epoch in range(math.ceil(args.epochs)):
+        if stop_training:
+            break
         epoch_loss_sum = 0.0
         epoch_steps = 0
         pbar = tqdm(train_loader, desc=f"epoch {epoch+1}", dynamic_ncols=True)
@@ -153,27 +158,31 @@ def main():
 
                 train_loss = epoch_loss_sum / epoch_steps
                 pbar.set_postfix(step=opt_step, loss=f"{train_loss:.4f}", enc_lr=f"{optimizer.param_groups[0]['lr']:.2e}", head_lr=f"{optimizer.param_groups[2]['lr']:.2e}")
-                if opt_step % args.logging_steps == 0:
-                    print(f"[step {opt_step}] train_loss={train_loss:.4f} lr_encoder={optimizer.param_groups[0]['lr']:.2e} lr_head={optimizer.param_groups[2]['lr']:.2e}")
-                    wandb.log({
-                        "train_loss": train_loss,
-                        "lr_encoder": optimizer.param_groups[0]["lr"],
-                        "lr_head": optimizer.param_groups[2]["lr"],
-                        "epoch": epoch,
-                    }, step=opt_step)
 
                 if opt_step % args.save_steps == 0:
                     metrics = evaluate(model, eval_loader, device, args.fp16)
-                    wandb.log(metrics, step=opt_step)
-                    print(f"[step {opt_step}] eval_cer={metrics['cer']:.4f} eval_wer={metrics['wer']:.4f} eval_loss={metrics['eval_loss']:.4f}")
+                    print(f"\n[step {opt_step}] CER: {metrics['cer']:.4f}  WER: {metrics['wer']:.4f}  Acc: {metrics['acc']:.1%}  loss: {metrics['eval_loss']:.4f}")
+                    for i, (ref, hyp) in enumerate(zip(metrics["refs"][:3], metrics["hyps"][:3]), 1):
+                        print(f"  {i}. GT:   {ref}")
+                        print(f"     Pred: {hyp}")
                     save_checkpoint(model, output_dir, opt_step, metrics["cer"], args.save_total_limit)
+                    if metrics["wer"] < best_wer:
+                        best_wer = metrics["wer"]
+                        no_improve_count = 0
+                    else:
+                        no_improve_count += 1
+                        if no_improve_count >= args.early_stopping_patience:
+                            print(f"[step {opt_step}] Early stopping: WER has not improved for {args.early_stopping_patience} evals (best={best_wer:.4f})")
+                            stop_training = True
+                            break
 
     # Final eval + save
     metrics = evaluate(model, eval_loader, device, args.fp16)
-    wandb.log(metrics)
-    print(f"Final: eval_cer={metrics['cer']:.4f} eval_wer={metrics['wer']:.4f} eval_loss={metrics['eval_loss']:.4f}")
+    print(f"\nFinal: CER: {metrics['cer']:.4f}  WER: {metrics['wer']:.4f}  Acc: {metrics['acc']:.1%}  loss: {metrics['eval_loss']:.4f}")
+    for i, (ref, hyp) in enumerate(zip(metrics["refs"][:3], metrics["hyps"][:3]), 1):
+        print(f"  {i}. GT:   {ref}")
+        print(f"     Pred: {hyp}")
     save_checkpoint(model, output_dir, opt_step, metrics["cer"], args.save_total_limit)
-    wandb.finish()
 
 
 if __name__ == "__main__":

@@ -21,7 +21,9 @@ from datasets import load_from_disk
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from constants import IGNORE_INDEX
+from jiwer import cer, wer
+from constants import IGNORE_INDEX, ID_TO_CONSONANT, ID_TO_VOWEL, STRESS_YES, is_hebrew_letter, MAX_LEN
+from infer import _decode, build_tokenizer_vocab
 from model import HebrewG2PClassifier
 from tokenization import load_encoder_tokenizer
 
@@ -51,6 +53,7 @@ def parse_args():
     parser.add_argument("--max-steps", type=int, default=-1, help="Stop after this many optimizer steps (-1 = no limit)")
     parser.add_argument("--init-from-checkpoint", type=str, default=None)
     parser.add_argument("--wandb-mode", type=str, default="offline", choices=["online", "offline", "disabled"])
+    parser.add_argument("--early-stopping-patience", type=int, default=40, help="Stop if metric does not improve for this many eval intervals (40 × 500 steps = 20K steps)")
     parser.add_argument(
         "--fp16",
         action=argparse.BooleanOptionalAction,
@@ -123,11 +126,51 @@ def compute_accuracy(logits: torch.Tensor, labels: torch.Tensor) -> float:
     return (preds[mask] == labels[mask]).float().mean().item()
 
 
-def evaluate(model, eval_loader, device, fp16: bool) -> dict:
+def _decode_labels(text: str, offset_mapping: list, consonant_labels, vowel_labels, stress_labels) -> str:
+    """Decode per-token label IDs into an IPA string using the same format as infer._decode."""
+    result = []
+    prev_char_end = 0
+    label_idx = 0
+    for tok_idx, (start, end) in enumerate(offset_mapping):
+        if start > prev_char_end:
+            result.append(text[prev_char_end:start])
+        if end - start != 1:
+            if end > start:
+                prev_char_end = end
+            continue
+        char = text[start:end]
+        prev_char_end = end
+        if not is_hebrew_letter(char):
+            if not (char == "'" and start > 0 and text[start - 1] in "גזצץ"):
+                result.append(char)
+            continue
+        if tok_idx >= len(consonant_labels):
+            break
+        c = int(consonant_labels[tok_idx])
+        v = int(vowel_labels[tok_idx])
+        s = int(stress_labels[tok_idx])
+        if c == IGNORE_INDEX:
+            continue
+        consonant = ID_TO_CONSONANT.get(c, "∅")
+        vowel = ID_TO_VOWEL.get(v, "∅")
+        chunk = ""
+        if consonant != "∅":
+            chunk += consonant
+        if s == STRESS_YES:
+            chunk += "ˈ"
+        if vowel != "∅":
+            chunk += vowel
+        result.append(chunk)
+    if prev_char_end < len(text):
+        result.append(text[prev_char_end:])
+    return "".join(result)
+
+
+def evaluate(model, eval_loader, device, fp16: bool, tokenizer, max_len: int) -> dict:
     model.eval()
     total_loss = 0.0
-    consonant_acc_sum = vowel_acc_sum = stress_acc_sum = 0.0
-    n = 0
+    refs, hyps = [], []
+    vocab = build_tokenizer_vocab(tokenizer)
 
     with torch.no_grad():
         for batch in eval_loader:
@@ -135,18 +178,35 @@ def evaluate(model, eval_loader, device, fp16: bool) -> dict:
             with torch.autocast("cuda", enabled=fp16):
                 out = model(**batch)
             total_loss += out["loss"].item()
-            consonant_acc_sum += compute_accuracy(out["consonant_logits"], batch["consonant_labels"])
-            vowel_acc_sum += compute_accuracy(out["vowel_logits"], batch["vowel_labels"])
-            stress_acc_sum += compute_accuracy(out["stress_logits"], batch["stress_labels"])
-            n += 1
+
+            texts = tokenizer.batch_decode(batch["input_ids"], skip_special_tokens=True)
+            c_labels = batch["consonant_labels"].cpu().tolist()
+            v_labels = batch["vowel_labels"].cpu().tolist()
+            s_labels = batch["stress_labels"].cpu().tolist()
+
+            for i, text in enumerate(texts):
+                seq_len = int(batch["attention_mask"][i].sum().item())
+                enc = tokenizer(text, truncation=True, max_length=seq_len, return_offsets_mapping=True)
+                offset_mapping = enc["offset_mapping"]
+                refs.append(_decode_labels(text, offset_mapping, c_labels[i], v_labels[i], s_labels[i]))
+                hyps.append(_decode(
+                    text=text,
+                    offset_mapping=offset_mapping,
+                    consonant_logits=out["consonant_logits"][i],
+                    vowel_logits=out["vowel_logits"][i],
+                    stress_logits=out["stress_logits"][i],
+                ))
 
     model.train()
+    mean_wer = sum(wer(r, h) for r, h in zip(refs, hyps)) / len(refs)
+    mean_cer = sum(cer(r, h) for r, h in zip(refs, hyps)) / len(refs)
     return {
-        "eval_loss": total_loss / n,
-        "consonant_acc": consonant_acc_sum / n,
-        "vowel_acc": vowel_acc_sum / n,
-        "stress_acc": stress_acc_sum / n,
-        "mean_acc": (consonant_acc_sum + vowel_acc_sum + stress_acc_sum) / (3 * n),
+        "eval_loss": total_loss / len(eval_loader),
+        "cer": mean_cer,
+        "wer": mean_wer,
+        "acc": 1 - mean_wer,
+        "refs": refs,
+        "hyps": hyps,
     }
 
 
@@ -169,6 +229,7 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=args.train_batch_size, shuffle=True, collate_fn=collator, num_workers=4, pin_memory=True)
     eval_loader = DataLoader(eval_dataset, batch_size=args.eval_batch_size, shuffle=False, collate_fn=collator, num_workers=4, pin_memory=True)
 
+    encoder_tokenizer = load_encoder_tokenizer()
     model = HebrewG2PClassifier().to(device)
 
     if args.init_from_checkpoint:
@@ -198,8 +259,13 @@ def main():
     global_step = 0
     opt_step = 0
     optimizer.zero_grad()
+    best_wer = float("inf")
+    no_improve_count = 0
+    stop_training = False
 
     for epoch in range(math.ceil(args.epochs)):
+        if stop_training:
+            break
         epoch_loss_sum = 0.0
         epoch_steps = 0
         pbar = tqdm(train_loader, desc=f"epoch {epoch + 1}", dynamic_ncols=True)
@@ -240,26 +306,29 @@ def main():
                     head_lr=f"{optimizer.param_groups[2]['lr']:.2e}",
                 )
 
-                if opt_step % args.logging_steps == 0:
-                    print(f"[step {opt_step}] train_loss={train_loss:.4f} lr_encoder={optimizer.param_groups[0]['lr']:.2e} lr_head={optimizer.param_groups[2]['lr']:.2e}")
-                    wandb.log({
-                        "train_loss": train_loss,
-                        "lr_encoder": optimizer.param_groups[0]["lr"],
-                        "lr_head": optimizer.param_groups[2]["lr"],
-                        "epoch": epoch,
-                    }, step=opt_step)
-
                 if opt_step % args.save_steps == 0:
-                    metrics = evaluate(model, eval_loader, device, args.fp16)
-                    wandb.log(metrics, step=opt_step)
-                    print(f"[step {opt_step}] consonant_acc={metrics['consonant_acc']:.4f} vowel_acc={metrics['vowel_acc']:.4f} stress_acc={metrics['stress_acc']:.4f} eval_loss={metrics['eval_loss']:.4f}")
-                    save_checkpoint(model, output_dir, opt_step, metrics["mean_acc"], args.save_total_limit)
+                    metrics = evaluate(model, eval_loader, device, args.fp16, encoder_tokenizer, MAX_LEN)
+                    print(f"\n[step {opt_step}] CER: {metrics['cer']:.4f}  WER: {metrics['wer']:.4f}  Acc: {metrics['acc']:.1%}  loss: {metrics['eval_loss']:.4f}")
+                    for i, (ref, hyp) in enumerate(zip(metrics["refs"][:3], metrics["hyps"][:3]), 1):
+                        print(f"  {i}. GT:   {ref}")
+                        print(f"     Pred: {hyp}")
+                    save_checkpoint(model, output_dir, opt_step, metrics["wer"], args.save_total_limit)
+                    if metrics["wer"] < best_wer:
+                        best_wer = metrics["wer"]
+                        no_improve_count = 0
+                    else:
+                        no_improve_count += 1
+                        if no_improve_count >= args.early_stopping_patience:
+                            print(f"[step {opt_step}] Early stopping: WER has not improved for {args.early_stopping_patience} evals (best={best_wer:.4f})")
+                            stop_training = True
+                            break
 
-    metrics = evaluate(model, eval_loader, device, args.fp16)
-    wandb.log(metrics)
-    print(f"Final: consonant_acc={metrics['consonant_acc']:.4f} vowel_acc={metrics['vowel_acc']:.4f} stress_acc={metrics['stress_acc']:.4f}")
-    save_checkpoint(model, output_dir, opt_step, metrics["mean_acc"], args.save_total_limit)
-    wandb.finish()
+    metrics = evaluate(model, eval_loader, device, args.fp16, encoder_tokenizer, MAX_LEN)
+    print(f"\nFinal: CER: {metrics['cer']:.4f}  WER: {metrics['wer']:.4f}  Acc: {metrics['acc']:.1%}  loss: {metrics['eval_loss']:.4f}")
+    for i, (ref, hyp) in enumerate(zip(metrics["refs"][:3], metrics["hyps"][:3]), 1):
+        print(f"  {i}. GT:   {ref}")
+        print(f"     Pred: {hyp}")
+    save_checkpoint(model, output_dir, opt_step, metrics["wer"], args.save_total_limit)
 
 
 if __name__ == "__main__":

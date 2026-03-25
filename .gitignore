@@ -28,3 +28,7 @@ model-he/
 *.npy
 *.wav
 *.tar.gz
+set-gpu-power-limit.sh
+.gitignore
+y.pub
+y

@@ -12,5 +12,6 @@ uv run src/train.py \
   --eval-batch-size  32 \
   --epochs         3 \
   --save-steps     500 \
-  --max-steps      20000 \
-  --wandb-mode     disabled
+  --max-steps                20000 \
+  --early-stopping-patience  40 \
+  --wandb-mode               disabled

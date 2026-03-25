@@ -33,4 +33,5 @@ def parse_args():
     parser.add_argument("--max-steps", type=int, default=-1, help="Stop after this many optimizer steps (-1 = no limit)")
     parser.add_argument("--init-from-checkpoint", type=str, default=None)
     parser.add_argument("--wandb-mode", type=str, default="offline", choices=["online", "offline", "disabled"])
+    parser.add_argument("--early-stopping-patience", type=int, default=40, help="Stop if WER does not improve for this many eval intervals (40 × 500 steps = 20K steps)")
     return parser.parse_args()
