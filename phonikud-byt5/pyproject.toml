@@ -1,0 +1,25 @@
+[project]
+name = "phonikud-byt5"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "thewh1teagle", email = "61390950+thewh1teagle@users.noreply.github.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.3.2",
+    "torch>=2.8.0",
+    "tqdm>=4.67.1",
+    "transformers>=4.56.1",
+    "jiwer>=3.0.0",
+    "typed-argument-parser",
+    "sentencepiece>=0.2.1",
+    "accelerate>=0.26.0",
+    "wandb>=0.21.3",
+]
+
+[build-system]
+requires = ["uv_build>=0.8.4,<0.9.0"]
+build-backend = "uv_build"
+
