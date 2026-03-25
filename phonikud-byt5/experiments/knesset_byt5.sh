@@ -19,7 +19,7 @@ cd ..
 uv run src/prepare_data.py \
   --input      dataset/knesset_phonemes_v1.txt \
   --output-dir dataset/knesset_split \
-  --lines      2000000 \
+  --lines      1500000 \
   --val-ratio  0 \
   --seed       42
 cd phonikud-byt5

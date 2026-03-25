@@ -166,8 +166,8 @@ def main():
     eval_dataset = load_from_disk(args.eval_dataset)
 
     collator = ClassifierDataCollator()
-    train_loader = DataLoader(train_dataset, batch_size=args.train_batch_size, shuffle=True, collate_fn=collator)
-    eval_loader = DataLoader(eval_dataset, batch_size=args.eval_batch_size, shuffle=False, collate_fn=collator)
+    train_loader = DataLoader(train_dataset, batch_size=args.train_batch_size, shuffle=True, collate_fn=collator, num_workers=4, pin_memory=True)
+    eval_loader = DataLoader(eval_dataset, batch_size=args.eval_batch_size, shuffle=False, collate_fn=collator, num_workers=4, pin_memory=True)
 
     model = HebrewG2PClassifier().to(device)
 
