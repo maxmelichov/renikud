@@ -30,6 +30,7 @@ def parse_args():
     )
     parser.add_argument("--freeze-encoder-steps", type=int, default=0)
     parser.add_argument("--upsample-factor", type=int, default=2)
+    parser.add_argument("--max-steps", type=int, default=-1, help="Stop after this many optimizer steps (-1 = no limit)")
     parser.add_argument("--init-from-checkpoint", type=str, default=None)
     parser.add_argument("--wandb-mode", type=str, default="offline", choices=["online", "offline", "disabled"])
     return parser.parse_args()

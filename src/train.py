@@ -48,6 +48,7 @@ def parse_args():
     parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
     parser.add_argument("--max-grad-norm", type=float, default=1.0)
     parser.add_argument("--freeze-encoder-steps", type=int, default=0)
+    parser.add_argument("--max-steps", type=int, default=-1, help="Stop after this many optimizer steps (-1 = no limit)")
     parser.add_argument("--init-from-checkpoint", type=str, default=None)
     parser.add_argument("--wandb-mode", type=str, default="offline", choices=["online", "offline", "disabled"])
     parser.add_argument(
@@ -186,6 +187,8 @@ def main():
     )
 
     total_opt_steps = math.ceil(len(train_loader) * args.epochs / args.gradient_accumulation_steps)
+    if args.max_steps > 0:
+        total_opt_steps = min(total_opt_steps, args.max_steps)
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,
         lr_lambda=lambda step: cosine_lr_lambda(step, args.warmup_steps, total_opt_steps),

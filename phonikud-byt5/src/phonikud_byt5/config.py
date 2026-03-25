@@ -29,5 +29,8 @@ class TrainArgs(Tap):
     wandb_project: str = "phonikud"  # Project name for Weights & Biases
     wandb_mode: str = "online"  # Wandb mode: 'online', 'offline', or 'disabled' (default: offline for local use)
     
+    val_file: Optional[str] = None  # TSV file to use as validation set (overrides val_split)
+    max_steps: int = -1  # Stop after this many optimizer steps (-1 = no limit)
+
     # Optional limits for testing
     max_lines: Optional[int] = None  # Limit dataset size for testing

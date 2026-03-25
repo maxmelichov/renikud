@@ -132,6 +132,27 @@ def update_metadata_with_models(ckpt_dir, best_model_info, last_model_info):
         json.dump(metadata, f, indent=2)
 
 
+def read_val_file(val_file: str, max_context_length: int) -> List[TrainingLine]:
+    """Read a TSV val file (Hebrew\\tIPA, skips header and extra columns)."""
+    lines = []
+    with open(val_file, 'r', encoding='utf-8') as f:
+        for i, line in enumerate(f):
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split('\t')
+            if len(parts) < 2:
+                continue
+            hebrew_text, phonemes = parts[0], parts[1]
+            # Skip header row
+            if i == 0 and not any('\u0590' <= c <= '\u05FF' for c in hebrew_text):
+                continue
+            if len(hebrew_text) > max_context_length or len(phonemes) > max_context_length:
+                continue
+            lines.append(TrainingLine(vocalized=phonemes, unvocalized=hebrew_text))
+    return lines
+
+
 def prepare_lines(args: TrainArgs, wandb_info=None) -> Tuple[List[TrainingLine], List[TrainingLine]]:
     """Higher level function that reads lines, splits them, and saves metadata"""
     # Read all lines
@@ -143,7 +164,10 @@ def prepare_lines(args: TrainArgs, wandb_info=None) -> Tuple[List[TrainingLine],
 
     # Create train and validation datasets
     train_lines = [lines[i] for i in train_indices]
-    val_lines = [lines[i] for i in val_indices]
+    if args.val_file:
+        val_lines = read_val_file(args.val_file, args.max_context_length)
+    else:
+        val_lines = [lines[i] for i in val_indices]
 
     # Save metadata
     save_train_metadata(

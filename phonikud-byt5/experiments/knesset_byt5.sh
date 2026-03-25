@@ -14,14 +14,26 @@
 
 set -euo pipefail
 
+# ── Step 1: Split raw knesset data (all lines → train, no val split) ──────
+cd ..
+uv run src/prepare_data.py \
+  --input      dataset/knesset_phonemes_v1.txt \
+  --output-dir dataset/knesset_split \
+  --lines      2000000 \
+  --val-ratio  0 \
+  --seed       42
+cd phonikud-byt5
+
+# ── Step 2: Train (pred.tsv as val, evaluated every 500 steps) ────────────
 uv run src/phonikud_byt5/run_train.py \
-  --data-dir    ../dataset/knesset_split \
-  --ckpt-dir    outputs/knesset-byt5 \
-  --model-name  google/byt5-small \
-  --batch-size  32 \
+  --data-dir      ../dataset/knesset_split \
+  --ckpt-dir      outputs/knesset-byt5 \
+  --model-name    google/byt5-small \
+  --batch-size    32 \
   --learning-rate 5e-5 \
-  --val-split   0.01 \
-  --eval-steps  500 \
-  --wandb-mode  online \
-  --wandb-project phonikud \
-  --wandb-entity  Phonikud
+  --val-split     0 \
+  --split-seed    42 \
+  --val-file      ../dataset/pred.tsv \
+  --eval-steps    500 \
+  --max-steps     20000 \
+  --wandb-mode    disabled
