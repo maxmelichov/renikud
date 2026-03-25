@@ -17,15 +17,60 @@ from pathlib import Path
 
 import torch
 import wandb
-from datasets import load_from_disk
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 from jiwer import cer, wer
 from constants import IGNORE_INDEX, ID_TO_CONSONANT, ID_TO_VOWEL, STRESS_YES, is_hebrew_letter, MAX_LEN
 from infer import _decode, build_tokenizer_vocab
 from model import HebrewG2PClassifier
+from align_data import align_sentence, strip_nikud
+from prepare_tokens import process_sentence
 from tokenization import load_encoder_tokenizer
+
+
+# ---------------------------------------------------------------------------
+# Dataset
+# ---------------------------------------------------------------------------
+
+class AlignmentDataset(Dataset):
+    """
+    Lazy dataset that works with two formats:
+      - JSONL  (.jsonl): pre-aligned, one JSON object per line
+      - Raw TSV (.txt):  hebrew_with_nikud<TAB>ipa — aligned on-the-fly
+    Tokenization (process_sentence) always happens in __getitem__.
+    """
+
+    def __init__(self, path: str):
+        self.is_jsonl = path.endswith(".jsonl")
+        with open(path, encoding="utf-8") as f:
+            self.lines = [l for l in f.readlines() if l.strip()]
+        print(f"Loaded {len(self.lines):,} lines from {path}")
+
+    def __len__(self):
+        return len(self.lines)
+
+    def __getitem__(self, idx):
+        tokenizer = load_encoder_tokenizer()
+        line = self.lines[idx]
+
+        if self.is_jsonl:
+            obj = json.loads(line)
+            hebrew, alignment = next(iter(obj.items()))
+        else:
+            parts = line.rstrip("\n").split("\t", 1)
+            if len(parts) != 2:
+                return self[idx + 1]  # skip malformed
+            hebrew = strip_nikud(parts[0])
+            alignment = align_sentence(hebrew, parts[1].strip())
+            if alignment is None:
+                return self[idx + 1]  # skip failed alignment
+
+        record = process_sentence(hebrew, alignment, tokenizer)
+        if record is None:
+            return self[idx + 1]
+        record["text"] = hebrew
+        return record
 
 
 # ---------------------------------------------------------------------------
@@ -72,11 +117,12 @@ class ClassifierDataCollator:
     pad_id: int = 0
     ignore_id: int = IGNORE_INDEX
 
-    def __call__(self, features: list[dict]) -> dict[str, torch.Tensor]:
+    def __call__(self, features: list[dict]) -> dict:
         max_len = max(len(f["input_ids"]) for f in features)
 
         input_ids, attention_mask = [], []
         consonant_labels, vowel_labels, stress_labels = [], [], []
+        texts = []
 
         for f in features:
             pad = max_len - len(f["input_ids"])
@@ -85,6 +131,7 @@ class ClassifierDataCollator:
             consonant_labels.append(list(f["consonant_labels"]) + [self.ignore_id] * pad)
             vowel_labels.append(list(f["vowel_labels"]) + [self.ignore_id] * pad)
             stress_labels.append(list(f["stress_labels"]) + [self.ignore_id] * pad)
+            texts.append(f.get("text", ""))
 
         return {
             "input_ids": torch.tensor(input_ids, dtype=torch.long),
@@ -92,6 +139,7 @@ class ClassifierDataCollator:
             "consonant_labels": torch.tensor(consonant_labels, dtype=torch.long),
             "vowel_labels": torch.tensor(vowel_labels, dtype=torch.long),
             "stress_labels": torch.tensor(stress_labels, dtype=torch.long),
+            "texts": texts,
         }
 
 
@@ -174,19 +222,18 @@ def evaluate(model, eval_loader, device, fp16: bool, tokenizer, max_len: int) ->
 
     with torch.no_grad():
         for batch in eval_loader:
+            texts = batch.pop("texts")
             batch = {k: v.to(device) for k, v in batch.items()}
             with torch.autocast("cuda", enabled=fp16):
                 out = model(**batch)
             total_loss += out["loss"].item()
 
-            texts = tokenizer.batch_decode(batch["input_ids"], skip_special_tokens=True)
             c_labels = batch["consonant_labels"].cpu().tolist()
             v_labels = batch["vowel_labels"].cpu().tolist()
             s_labels = batch["stress_labels"].cpu().tolist()
 
             for i, text in enumerate(texts):
-                seq_len = int(batch["attention_mask"][i].sum().item())
-                enc = tokenizer(text, truncation=True, max_length=seq_len, return_offsets_mapping=True)
+                enc = tokenizer(text, truncation=True, max_length=max_len, return_offsets_mapping=True)
                 offset_mapping = enc["offset_mapping"]
                 refs.append(_decode_labels(text, offset_mapping, c_labels[i], v_labels[i], s_labels[i]))
                 hyps.append(_decode(
@@ -222,14 +269,14 @@ def main():
 
     wandb.init(project="hebrew-g2p-classifier", config=vars(args), mode=args.wandb_mode)
 
-    train_dataset = load_from_disk(args.train_dataset)
-    eval_dataset = load_from_disk(args.eval_dataset)
+    encoder_tokenizer = load_encoder_tokenizer()
+    train_dataset = AlignmentDataset(args.train_dataset)
+    eval_dataset = AlignmentDataset(args.eval_dataset)
 
     collator = ClassifierDataCollator()
     train_loader = DataLoader(train_dataset, batch_size=args.train_batch_size, shuffle=True, collate_fn=collator, num_workers=4, pin_memory=True)
     eval_loader = DataLoader(eval_dataset, batch_size=args.eval_batch_size, shuffle=False, collate_fn=collator, num_workers=4, pin_memory=True)
 
-    encoder_tokenizer = load_encoder_tokenizer()
     model = HebrewG2PClassifier().to(device)
 
     if args.init_from_checkpoint:
@@ -279,6 +326,7 @@ def main():
                     p.requires_grad_(True)
                 print(f"\n[step {opt_step}] Encoder unfrozen.")
 
+            batch.pop("texts", None)
             batch = {k: v.to(device) for k, v in batch.items()}
             with torch.autocast("cuda", enabled=args.fp16):
                 out = model(**batch)
