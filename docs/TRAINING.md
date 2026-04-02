@@ -2,54 +2,91 @@
 
 ## Commands
 
-### 1. Align data
+### 1. Prepare dataset
 
 ```console
-uv run src/align_data.py dataset/train.tsv dataset/train_alignment.jsonl
-uv run src/align_data.py dataset/val.tsv dataset/val_alignment.jsonl
+./scripts/train_prepare.sh dataset/data.tsv
 ```
 
-### 2. Prepare tokenized dataset
+### 2. Train from scratch
 
 ```console
-uv run src/prepare_tokens.py dataset/train_alignment.jsonl dataset/.cache/train
-uv run src/prepare_tokens.py dataset/val_alignment.jsonl dataset/.cache/val
+./scripts/train_scratch.sh
 ```
 
-### 3. Train
+### 3. Fine-tune from a checkpoint
 
 ```console
-uv run src/train.py \
-  --train-dataset dataset/.cache/train \
-  --eval-dataset dataset/.cache/val \
-  --output-dir outputs/my-run \
-  --epochs 1 \
-  --encoder-lr 2e-6 \
-  --head-lr 1e-5 \
-  --train-batch-size 32 \
-  --gradient-accumulation-steps 1 \
-  --warmup-steps 200 \
-  --logging-steps 50 \
-  --save-steps 200
+./scripts/train_finetune.sh outputs/g2p-classifier/checkpoint-5000
 ```
 
-### Fine-tuning from a checkpoint
-
-Use `--init-from-checkpoint` to load weights only (resets optimizer state):
+## Upload Checkpoint to HuggingFace
 
 ```console
-uv run src/train.py \
-  --train-dataset dataset/.cache/train \
-  --eval-dataset dataset/.cache/val \
-  --output-dir outputs/my-run \
-  --init-from-checkpoint outputs/previous-run/checkpoint-1200 \
-  --epochs 1
+./scripts/upload_checkpoint.sh outputs/g2p-classifier/checkpoint-5000
+```
+
+## Download Checkpoint
+
+```console
+./scripts/download_checkpoint.sh                  # downloads to ./checkpoint
+```
+
+To fine-tune from a downloaded checkpoint:
+
+```console
+./scripts/download_checkpoint.sh checkpoint
+./scripts/train_finetune.sh checkpoint
+```
+
+## CUDA Version
+
+Install PyTorch for your CUDA version using extras:
+
+```console
+uv sync --extra cu130  # CUDA 13.0
+uv sync --extra cu128  # CUDA 12.8
+```
+
+## xFormers
+
+xFormers must match your PyTorch CUDA version. If you see a version mismatch warning (e.g. built for cu128 but you have cu130), build from source:
+
+```console
+pip install xformers --no-binary xformers
+```
+
+Note: `pyproject.toml` pins PyTorch to the `pytorch-cu130` index. If your system uses a different CUDA version, remove or update that index entry before installing.
+
+## Flash Attention
+
+ModernBERT supports Flash Attention 2 for faster training and lower VRAM usage. Enable with `--flash-attention`:
+
+Install a prebuilt wheel first:
+
+- **x86_64**: https://github.com/mjun0812/flash-attention-prebuild-wheels
+- **aarch64 (ARM)**: https://pypi.jetson-ai-lab.io/sbsa/cu130
+
+```console
+./scripts/train_scratch.sh --flash-attention
+```
+
+Install a prebuilt wheel first:
+
+- **x86_64**: https://github.com/mjun0812/flash-attention-prebuild-wheels
+- **aarch64 (ARM)**: https://pypi.jetson-ai-lab.io/sbsa/cu130
+
+Validate:
+
+```console
+uv run python -c "import flash_attn; print(flash_attn.__version__)"
 ```
 
 ## Learning Rates
 
-- `--encoder-lr 2e-6` — safe for fine-tuning the 300M param DictaBERT encoder
-- `--head-lr 1e-5` — higher LR for the three classification heads
+- `--encoder-lr 2e-5` — default for training from scratch
+- `--head-lr 1e-4` — higher LR for the three classification heads
+- For fine-tuning use lower rates: `--encoder-lr 2e-6 --head-lr 1e-5`
 
 ## Data Format
 

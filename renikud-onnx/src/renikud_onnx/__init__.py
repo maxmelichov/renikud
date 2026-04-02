@@ -30,6 +30,7 @@ class G2P:
         self._letter_constraints: dict[str, list[int]] = {
             k: v for k, v in json.loads(meta["letter_consonant_constraints"]).items()
         }
+        self._geresh_map: dict[str, str] = json.loads(meta.get("geresh_map", "{}"))
 
     def _tokenize(self, text: str) -> tuple[list[int], list[int], list[tuple[int, int]]]:
         """Tokenize character by character, return ids, mask, and offset mapping."""
@@ -106,16 +107,29 @@ class G2P:
             if allowed is not None and cid not in allowed:
                 cid = max(allowed, key=lambda x: consonant_logits[0][tok_idx, x])
             consonant = self._consonant_vocab.get(cid, "∅")
+
+            # Geresh rule: if next char is apostrophe, force geresh consonant variant
+            if char in self._geresh_map and end < len(normalized) and normalized[end] == "'":
+                consonant = self._geresh_map[char]
+
             vowel = self._vowel_vocab.get(int(vowel_preds[tok_idx]), "∅")
             stress = tok_idx in stressed_positions
 
+            # Assemble IPA chunk: [consonant][ˈ][vowel]
+            # Exception: word-final ח with vowel a — furtive patah flips to [ˈ]aχ
+            word_final = end >= len(normalized) or not normalized[end].isalpha()
             chunk = ""
-            if consonant != "∅":
-                chunk += consonant
-            if stress:
-                chunk += STRESS_MARK
-            if vowel != "∅":
-                chunk += vowel
+            if char == "ח" and word_final and vowel == "a":
+                if stress:
+                    chunk += STRESS_MARK
+                chunk += "aχ"
+            else:
+                if consonant != "∅":
+                    chunk += consonant
+                if stress:
+                    chunk += STRESS_MARK
+                if vowel != "∅":
+                    chunk += vowel
             result.append(chunk)
 
         if prev_end < len(normalized):

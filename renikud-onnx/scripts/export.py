@@ -8,33 +8,35 @@ Usage:
 
 import argparse
 import json
-import sys
+import os
 import tempfile
 from pathlib import Path
+
+# Must be set before importing model/encoder so NeoBERT uses ONNX-compatible ops
+os.environ["NEOBERT_ONNX_EXPORT"] = "1"
 
 import onnx
 import torch
 from onnxruntime.quantization import QuantType, quantize_dynamic
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
-from constants import CONSONANTS, VOWELS, HEBREW_LETTER_TO_ALLOWED_CONSONANTS
+from constants import CONSONANTS, VOWELS, TOKENIZER_PATH
 from infer import load_checkpoint
-from model import HebrewG2PClassifier
-from tokenization import load_encoder_tokenizer
+from model import G2PModel
+from phonology import HEBREW_LETTER_CONSONANT_IDS as HEBREW_LETTER_TO_ALLOWED_CONSONANTS, HEBREW_LETTER_CONSONANTS, LETTERS_WITH_GERESH
+from tokenization import load_tokenizer
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--output", default="model.onnx")
-    parser.add_argument("--int8", action="store_true", help="Quantize weights to INT8 (dynamic quantization, no calibration needed)")
+    parser.add_argument("--int8", action=argparse.BooleanOptionalAction, default=True, help="Quantize weights to INT8 (dynamic quantization, no calibration needed)")
     args = parser.parse_args()
 
-    tokenizer = load_encoder_tokenizer()
+    tokenizer = load_tokenizer(TOKENIZER_PATH)
     vocab = tokenizer.get_vocab()  # {token: id}
     tokenizer_vocab = {v: k for k, v in vocab.items()}  # {id: token}
 
-    model = HebrewG2PClassifier()
+    model = G2PModel()
     load_checkpoint(model, args.checkpoint)
     if args.int8:
         model.float().eval()
@@ -63,7 +65,7 @@ def main():
             "vowel_logits": {0: "batch", 1: "seq_len"},
             "stress_logits": {0: "batch", 1: "seq_len"},
         },
-        opset_version=17,
+        opset_version=18,
     )
 
     if args.int8:
@@ -97,6 +99,14 @@ def main():
     entry = meta.add()
     entry.key = "sep_token_id"
     entry.value = str(tokenizer.sep_token_id)
+
+    entry = meta.add()
+    entry.key = "letter_consonant_mask"
+    entry.value = json.dumps({letter: list(ids) for letter, ids in HEBREW_LETTER_TO_ALLOWED_CONSONANTS.items()})
+
+    entry = meta.add()
+    entry.key = "geresh_map"
+    entry.value = json.dumps({letter: HEBREW_LETTER_CONSONANTS[letter][1] for letter in LETTERS_WITH_GERESH if letter in HEBREW_LETTER_CONSONANTS and len(HEBREW_LETTER_CONSONANTS[letter]) >= 2})
 
     onnx.save_model(onnx_model, args.output, save_as_external_data=False)
 

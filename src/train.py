@@ -5,27 +5,31 @@ Example:
         --train-dataset dataset/.cache/classifier-train \
         --eval-dataset dataset/.cache/classifier-val \
         --output-dir outputs/g2p-classifier
+
+Multi-GPU:
+    accelerate launch src/train.py \
+        --train-dataset dataset/.cache/train \
+        --eval-dataset dataset/.cache/val \
+        --output-dir outputs/g2p-classifier
 """
 
 from __future__ import annotations
 
-import argparse
-import json
 import math
-import shutil
 from pathlib import Path
 
 import torch
 import wandb
+from accelerate import Accelerator
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 from jiwer import cer, wer
 from constants import IGNORE_INDEX, ID_TO_CONSONANT, ID_TO_VOWEL, STRESS_YES, is_hebrew_letter, MAX_LEN
 from infer import _decode, build_tokenizer_vocab
-from model import HebrewG2PClassifier
-from align_data import align_sentence, strip_nikud
-from prepare_tokens import process_sentence
+from model import G2PModel
+from data_align import align_sentence, strip_nikud
+from data_tokenize import process_sentence
 from tokenization import load_encoder_tokenizer
 
 
@@ -100,6 +104,8 @@ def parse_args():
     parser.add_argument("--device", type=str, default=None, help="Device to use, e.g. cuda:0, cuda:1, cpu (default: auto-detect)")
     parser.add_argument("--wandb-mode", type=str, default="offline", choices=["online", "offline", "disabled"])
     parser.add_argument("--early-stopping-patience", type=int, default=40, help="Stop if metric does not improve for this many eval intervals (40 × 500 steps = 20K steps)")
+    parser.add_argument("--init-weights-only", action="store_true", default=False, help="Load weights from checkpoint but reset step counter and scheduler (for finetuning on new data)")
+    parser.add_argument("--flash-attention", action="store_true", default=False)
     parser.add_argument(
         "--fp16",
         action=argparse.BooleanOptionalAction,
@@ -266,12 +272,12 @@ def main():
     args = parse_args()
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    if args.device:
-        device = torch.device(args.device)
-    else:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    wandb.init(project="hebrew-g2p-classifier", config=vars(args), mode=args.wandb_mode)
+    accelerator = Accelerator(mixed_precision="fp16" if args.fp16 else "no")
+    device = accelerator.device
+
+    if accelerator.is_main_process:
+        wandb.init(project="hebrew-g2p-classifier", config=vars(args), mode=args.wandb_mode)
 
     encoder_tokenizer = load_encoder_tokenizer()
     train_dataset = AlignmentDataset(args.train_dataset)
@@ -282,21 +288,23 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=args.train_batch_size, shuffle=True, collate_fn=collator, num_workers=4, pin_memory=pin_memory)
     eval_loader = DataLoader(eval_dataset, batch_size=args.eval_batch_size, shuffle=False, collate_fn=collator, num_workers=4, pin_memory=pin_memory)
 
-    model = HebrewG2PClassifier().to(device)
+    model = G2PModel(flash_attention=args.flash_attention)
 
     if args.init_from_checkpoint:
         from safetensors.torch import load_file
         state = load_file(str(Path(args.init_from_checkpoint) / "model.safetensors"), device="cpu")
         model.load_state_dict(state, strict=False)
-        print(f"Loaded weights from {args.init_from_checkpoint}")
+        if accelerator.is_main_process:
+            print(f"Loaded weights from {args.init_from_checkpoint}")
 
     if args.freeze_encoder_steps > 0:
         for p in model.encoder.parameters():
             p.requires_grad_(False)
-        print("Encoder frozen.")
+        if accelerator.is_main_process:
+            print("Encoder frozen.")
 
     optimizer = torch.optim.AdamW(
-        model.parameter_groups(args.encoder_lr, args.head_lr, args.weight_decay)
+        parameter_groups(model, args.encoder_lr, args.head_lr, args.weight_decay)
     )
 
     total_opt_steps = math.ceil(len(train_loader) * args.epochs / args.gradient_accumulation_steps)
@@ -306,10 +314,26 @@ def main():
         optimizer,
         lr_lambda=lambda step: cosine_lr_lambda(step, args.warmup_steps, total_opt_steps),
     )
-    scaler = torch.cuda.amp.GradScaler(enabled=args.fp16)
 
-    global_step = 0
+    model, optimizer, train_loader, eval_loader, scheduler = accelerator.prepare(
+        model, optimizer, train_loader, eval_loader, scheduler
+    )
+
+    # Restore step counter when resuming (skipped when --init-weights-only)
     opt_step = 0
+    if args.init_from_checkpoint and not args.init_weights_only:
+        import json
+        state_path = Path(args.init_from_checkpoint) / "train_state.json"
+        if state_path.exists():
+            saved = json.loads(state_path.read_text())
+            opt_step = saved["step"]
+            # Fast-forward scheduler to correct LR
+            for _ in range(opt_step):
+                scheduler.step()
+            if accelerator.is_main_process:
+                print(f"Resumed from step {opt_step}")
+
+    global_step = opt_step * args.gradient_accumulation_steps
     optimizer.zero_grad()
     best_wer = float("inf")
     no_improve_count = 0
@@ -320,33 +344,31 @@ def main():
             break
         epoch_loss_sum = 0.0
         epoch_steps = 0
-        pbar = tqdm(train_loader, desc=f"epoch {epoch + 1}", dynamic_ncols=True)
+        pbar = tqdm(train_loader, desc=f"epoch {epoch + 1}", dynamic_ncols=True, disable=not accelerator.is_main_process)
 
         for batch in pbar:
             if opt_step >= total_opt_steps:
                 break
 
             if args.freeze_encoder_steps > 0 and global_step == args.freeze_encoder_steps:
-                for p in model.encoder.parameters():
+                for p in accelerator.unwrap_model(model).encoder.parameters():
                     p.requires_grad_(True)
-                print(f"\n[step {opt_step}] Encoder unfrozen.")
+                if accelerator.is_main_process:
+                    print(f"\n[step {opt_step}] Encoder unfrozen.")
 
             batch.pop("texts", None)
-            batch = {k: v.to(device) for k, v in batch.items()}
-            with torch.autocast("cuda", enabled=args.fp16):
+            with accelerator.autocast():
                 out = model(**batch)
 
             scaled_loss = out["loss"] / args.gradient_accumulation_steps
-            scaler.scale(scaled_loss).backward()
+            accelerator.backward(scaled_loss)
             epoch_loss_sum += out["loss"].item()
             epoch_steps += 1
             global_step += 1
 
             if global_step % args.gradient_accumulation_steps == 0:
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
-                scaler.step(optimizer)
-                scaler.update()
+                accelerator.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+                optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
                 opt_step += 1
@@ -359,36 +381,49 @@ def main():
                     head_lr=f"{optimizer.param_groups[2]['lr']:.2e}",
                 )
 
-                if opt_step % args.save_steps == 0:
-                    metrics = evaluate(model, eval_loader, device, args.fp16, encoder_tokenizer, MAX_LEN)
-                    print(f"\n[step {opt_step}] CER: {metrics['cer']:.4f}  WER: {metrics['wer']:.4f}  Acc: {metrics['acc']:.1%}  loss: {metrics['eval_loss']:.4f}")
-                    for i, (ref, hyp) in enumerate(zip(metrics["refs"][:3], metrics["hyps"][:3]), 1):
-                        print(f"  {i}. GT:   {ref}")
-                        print(f"     Pred: {hyp}")
-                    save_checkpoint(model, output_dir, opt_step, {k: v for k, v in metrics.items() if k not in ("refs", "hyps")}, args.save_total_limit)
-                    if metrics["wer"] < best_wer:
-                        best_wer = metrics["wer"]
-                        no_improve_count = 0
-                        best_ckpt_dir = output_dir / "checkpoint-best"
-                        best_ckpt_dir.mkdir(parents=True, exist_ok=True)
-                        from safetensors.torch import save_file
-                        save_file(model.state_dict(), str(best_ckpt_dir / "model.safetensors"))
-                        (best_ckpt_dir / "train_state.json").write_text(json.dumps({"step": opt_step, **{k: v for k, v in metrics.items() if k not in ("refs", "hyps")}}))
-                        print(f"  [checkpoint-best updated at step {opt_step}] [patience: {no_improve_count}/{args.early_stopping_patience}]")
-                    else:
-                        no_improve_count += 1
-                        print(f"  [patience: {no_improve_count}/{args.early_stopping_patience}]")
-                        if no_improve_count >= args.early_stopping_patience:
-                            print(f"[step {opt_step}] Early stopping: WER has not improved for {args.early_stopping_patience} evals (best={best_wer:.4f})")
-                            stop_training = True
-                            break
+                if accelerator.is_main_process:
+                    if opt_step % args.logging_steps == 0:
+                        wandb.log({
+                            "train_loss": train_loss,
+                            "lr_encoder": optimizer.param_groups[0]["lr"],
+                            "lr_head": optimizer.param_groups[2]["lr"],
+                            "epoch": epoch,
+                        }, step=opt_step)
 
-    metrics = evaluate(model, eval_loader, device, args.fp16, encoder_tokenizer, MAX_LEN)
-    print(f"\nFinal: CER: {metrics['cer']:.4f}  WER: {metrics['wer']:.4f}  Acc: {metrics['acc']:.1%}  loss: {metrics['eval_loss']:.4f}")
-    for i, (ref, hyp) in enumerate(zip(metrics["refs"][:3], metrics["hyps"][:3]), 1):
-        print(f"  {i}. GT:   {ref}")
-        print(f"     Pred: {hyp}")
-    save_checkpoint(model, output_dir, opt_step, {k: v for k, v in metrics.items() if k not in ("refs", "hyps")}, args.save_total_limit)
+                    if opt_step % args.save_steps == 0:
+                        metrics = evaluate(accelerator.unwrap_model(model), eval_loader, device, args.fp16, encoder_tokenizer, MAX_LEN)
+                        wandb.log({k: v for k, v in metrics.items() if k not in ("refs", "hyps")}, step=opt_step)
+                        print(f"\n[step {opt_step}] CER: {metrics['cer']:.4f}  WER: {metrics['wer']:.4f}  Acc: {metrics['acc']:.1%}  loss: {metrics['eval_loss']:.4f}")
+                        for i, (ref, hyp) in enumerate(zip(metrics["refs"][:3], metrics["hyps"][:3]), 1):
+                            print(f"  {i}. GT:   {ref}")
+                            print(f"     Pred: {hyp}")
+                        save_checkpoint(accelerator.unwrap_model(model), output_dir, opt_step, {k: v for k, v in metrics.items() if k not in ("refs", "hyps")}, args.save_total_limit)
+                        if metrics["wer"] < best_wer:
+                            best_wer = metrics["wer"]
+                            no_improve_count = 0
+                            best_ckpt_dir = output_dir / "checkpoint-best"
+                            best_ckpt_dir.mkdir(parents=True, exist_ok=True)
+                            from safetensors.torch import save_file
+                            save_file(accelerator.unwrap_model(model).state_dict(), str(best_ckpt_dir / "model.safetensors"))
+                            (best_ckpt_dir / "train_state.json").write_text(json.dumps({"step": opt_step, **{k: v for k, v in metrics.items() if k not in ("refs", "hyps")}}))
+                            print(f"  [checkpoint-best updated at step {opt_step}] [patience: {no_improve_count}/{args.early_stopping_patience}]")
+                        else:
+                            no_improve_count += 1
+                            print(f"  [patience: {no_improve_count}/{args.early_stopping_patience}]")
+                            if no_improve_count >= args.early_stopping_patience:
+                                print(f"[step {opt_step}] Early stopping: WER has not improved for {args.early_stopping_patience} evals (best={best_wer:.4f})")
+                                stop_training = True
+                                break
+
+    if accelerator.is_main_process:
+        metrics = evaluate(accelerator.unwrap_model(model), eval_loader, device, args.fp16, encoder_tokenizer, MAX_LEN)
+        wandb.log({k: v for k, v in metrics.items() if k not in ("refs", "hyps")})
+        print(f"\nFinal: CER: {metrics['cer']:.4f}  WER: {metrics['wer']:.4f}  Acc: {metrics['acc']:.1%}  loss: {metrics['eval_loss']:.4f}")
+        for i, (ref, hyp) in enumerate(zip(metrics["refs"][:3], metrics["hyps"][:3]), 1):
+            print(f"  {i}. GT:   {ref}")
+            print(f"     Pred: {hyp}")
+        save_checkpoint(accelerator.unwrap_model(model), output_dir, opt_step, {k: v for k, v in metrics.items() if k not in ("refs", "hyps")}, args.save_total_limit)
+        wandb.finish()
 
 
 if __name__ == "__main__":

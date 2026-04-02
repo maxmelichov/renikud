@@ -12,7 +12,8 @@ wheels/
 *.7z
 *.txt
 plans/overfit/dataset/
-dataset/
+dataset/*
+!dataset/.gitkeep
 dataset_finetune/
 checkpoint/
 checkpoints/
@@ -32,3 +33,4 @@ set-gpu-power-limit.sh
 .gitignore
 y.pub
 y
+backup_checkpoints/
