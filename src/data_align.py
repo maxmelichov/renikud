@@ -24,6 +24,7 @@ from phonology import HEBREW_LETTER_CONSONANTS as HEBREW_CONSONANTS
 VOWELS = ("a", "e", "i", "o", "u")
 STRESS = "ˈ"
 SPACE = " "
+ALL_CONSONANTS = tuple(sorted({c for cs in HEBREW_CONSONANTS.values() for c in cs if c}, key=len, reverse=True))
 
 
 def strip_nikud(text: str) -> str:
@@ -31,7 +32,7 @@ def strip_nikud(text: str) -> str:
     return re.sub(r"[\p{M}|]", "", text)
 
 
-def align_word(heb_word: str, ipa_word: str) -> list[tuple[str, str]] | None:
+def align_word(heb_word: str, ipa_word: str, allow_null: bool = False, force: bool = False) -> list[tuple[str, str]] | None:
     """
     Align a single Hebrew word to its IPA using DP.
     Returns list of (hebrew_char, ipa_chunk) or None if no valid alignment found.
@@ -50,7 +51,7 @@ def align_word(heb_word: str, ipa_word: str) -> list[tuple[str, str]] | None:
 
     for i in range(1, n + 1):
         char = heb_word[i - 1]
-        allowed = HEBREW_CONSONANTS.get(char, ("",))
+        allowed = ALL_CONSONANTS + ("",) if force else HEBREW_CONSONANTS.get(char, ("",))
 
         for j_prev in range(m + 1):
             if not dp[i - 1][j_prev]:
@@ -108,6 +109,12 @@ def align_word(heb_word: str, ipa_word: str) -> list[tuple[str, str]] | None:
                                 dp[i][j_new] = True
                                 back[i][j_new] = j_prev
 
+            # Fallback: allow silent letter (maps to empty IPA chunk)
+            if allow_null:
+                if not dp[i][j_prev]:
+                    dp[i][j_prev] = True
+                    back[i][j_prev] = j_prev
+
             # Special case: ו/י as pure vowel (u, o, i) with optional stress
             if char in ("ו", "י"):
                 vowel_map = {"ו": ("u", "o"), "י": ("i",)}
@@ -158,11 +165,20 @@ def align_sentence(heb: str, ipa: str) -> list[tuple[str, str]] | None:
         heb_core = re.sub(r"[^\u05d0-\u05ea]", "", hw)
         # Keep only IPA phoneme characters (strip punctuation like . , ? !)
         ipa_core = re.sub(r"[^abdefghijklmnoprstuvwzɡʁʃʒʔˈχ]", "", iw)
+        # Normalize ASCII g → IPA ɡ (U+0261)
+        ipa_core = ipa_core.replace("g", "ɡ")
+        # Normalize syllable-initial stress (ˈC+) → post-consonant stress (C+ˈ)
+        # e.g. ˈbʁat → bʁˈat so the aligner can attach stress to the right vowel
+        ipa_core = re.sub(r"ˈ([^aeiouvˈ]+)", lambda m: m.group(1) + "ˈ", ipa_core)
 
         if not heb_core:
             continue
 
         aligned = align_word(heb_core, ipa_core)
+        if aligned is None:
+            aligned = align_word(heb_core, ipa_core, allow_null=True)
+        if aligned is None:
+            aligned = align_word(heb_core, ipa_core, allow_null=True, force=True)
         if aligned is None:
             return None
         result.extend(aligned)

@@ -13,6 +13,6 @@ def save_checkpoint(model, output_dir: Path, step: int, acc: float, save_total_l
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     save_file(model.state_dict(), str(ckpt_dir / "model.safetensors"))
     (ckpt_dir / "train_state.json").write_text(json.dumps({"step": step, "acc": acc}))
-    checkpoints = sorted(output_dir.glob("checkpoint-*"), key=lambda p: int(p.name.split("-")[1]))
+    checkpoints = sorted([p for p in output_dir.glob("checkpoint-*") if p.name != "checkpoint-best"], key=lambda p: int(p.name.split("-")[1]))
     while len(checkpoints) > save_total_limit:
         shutil.rmtree(checkpoints.pop(0))

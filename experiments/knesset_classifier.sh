@@ -5,11 +5,11 @@
 set -euo pipefail
 
 uv run src/train.py \
-  --train-dataset  dataset/knesset_vox_new_asr.tsv \
-  --eval-dataset   dataset/gt_alignment.jsonl \
-  --output-dir     outputs/knesset-classifier-metadata \
-  --train-batch-size 56 \
-  --eval-batch-size  56 \
+  --train-dataset  dataset/knesset_vox_new_asr_split.tsv \
+  --eval-dataset   dataset/gt.tsv \
+  --output-dir     outputs/knesset-classifier-split \
+  --train-batch-size 64 \
+  --eval-batch-size  64 \
   --epochs         3 \
   --encoder-lr     2e-5 \
   --head-lr        1e-4 \

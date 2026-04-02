@@ -2,19 +2,21 @@
 
 Example:
     uv run src/train.py \
-        --train-dataset dataset/.cache/classifier-train \
-        --eval-dataset dataset/.cache/classifier-val \
+        --train-dataset dataset/knesset_vox_new_asr_split.tsv \
+        --eval-dataset dataset/gt_alignment.jsonl \
         --output-dir outputs/g2p-classifier
 
 Multi-GPU:
     accelerate launch src/train.py \
-        --train-dataset dataset/.cache/train \
-        --eval-dataset dataset/.cache/val \
+        --train-dataset dataset/knesset_vox_new_asr_split.tsv \
+        --eval-dataset dataset/gt_alignment.jsonl \
         --output-dir outputs/g2p-classifier
 """
 
 from __future__ import annotations
 
+import argparse
+import json
 import math
 from pathlib import Path
 
@@ -24,13 +26,15 @@ from accelerate import Accelerator
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-from jiwer import cer, wer
-from constants import IGNORE_INDEX, ID_TO_CONSONANT, ID_TO_VOWEL, STRESS_YES, is_hebrew_letter, MAX_LEN
-from infer import _decode, build_tokenizer_vocab
-from model import G2PModel
+from checkpoint import save_checkpoint
+from constants import IGNORE_INDEX, MAX_LEN
 from data_align import align_sentence, strip_nikud
 from data_tokenize import process_sentence
-from tokenization import load_encoder_tokenizer
+from eval import evaluate
+from model import G2PModel
+from optimizer import cosine_lr_lambda, parameter_groups
+from constants import TOKENIZER_PATH
+from tokenization import load_tokenizer
 
 
 # ---------------------------------------------------------------------------
@@ -41,32 +45,38 @@ class AlignmentDataset(Dataset):
     """
     Lazy dataset that works with two formats:
       - JSONL  (.jsonl): pre-aligned, one JSON object per line
-      - Raw TSV (.txt):  hebrew_with_nikud<TAB>ipa — aligned on-the-fly
-    Tokenization (process_sentence) always happens in __getitem__.
+      - Raw TSV (.tsv/.txt): hebrew_with_nikud<TAB>ipa — aligned on-the-fly
     """
 
     def __init__(self, path: str):
         self.is_jsonl = path.endswith(".jsonl")
+        self.tokenizer = load_tokenizer(TOKENIZER_PATH)
         with open(path, encoding="utf-8") as f:
-            self.lines = [l for l in f.readlines() if l.strip()]
+            raw = [l for l in f.readlines() if l.strip()]
+        if not self.is_jsonl:
+            # Pre-filter: keep only lines that have Hebrew characters (skip headers/empty)
+            raw = [l for l in raw if any("\u05d0" <= c <= "\u05ea" for c in l.split("\t")[0])]
+        self.lines = raw
         print(f"Loaded {len(self.lines):,} lines from {path}")
 
     def __len__(self):
         return len(self.lines)
 
     def __getitem__(self, idx):
-        tokenizer = load_encoder_tokenizer()
+        tokenizer = self.tokenizer
         line = self.lines[idx]
 
         if self.is_jsonl:
             obj = json.loads(line)
             hebrew, alignment = next(iter(obj.items()))
+            ref_ipa = "".join(chunk for _, chunk in alignment)
         else:
-            parts = line.rstrip("\n").split("\t", 1)
-            if len(parts) != 2:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 2:
                 return self[idx + 1]  # skip malformed
             hebrew = strip_nikud(parts[0])
-            alignment = align_sentence(hebrew, parts[1].strip())
+            ref_ipa = parts[1].strip()
+            alignment = align_sentence(hebrew, ref_ipa)
             if alignment is None:
                 return self[idx + 1]  # skip failed alignment
 
@@ -74,6 +84,7 @@ class AlignmentDataset(Dataset):
         if record is None:
             return self[idx + 1]
         record["text"] = hebrew
+        record["ref_ipa"] = ref_ipa
         return record
 
 
@@ -101,10 +112,10 @@ def parse_args():
     parser.add_argument("--freeze-encoder-steps", type=int, default=0)
     parser.add_argument("--max-steps", type=int, default=-1, help="Stop after this many optimizer steps (-1 = no limit)")
     parser.add_argument("--init-from-checkpoint", type=str, default=None)
-    parser.add_argument("--device", type=str, default=None, help="Device to use, e.g. cuda:0, cuda:1, cpu (default: auto-detect)")
+    parser.add_argument("--init-weights-only", action="store_true", default=False)
+    parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--wandb-mode", type=str, default="offline", choices=["online", "offline", "disabled"])
-    parser.add_argument("--early-stopping-patience", type=int, default=40, help="Stop if metric does not improve for this many eval intervals (40 × 500 steps = 20K steps)")
-    parser.add_argument("--init-weights-only", action="store_true", default=False, help="Load weights from checkpoint but reset step counter and scheduler (for finetuning on new data)")
+    parser.add_argument("--early-stopping-patience", type=int, default=40)
     parser.add_argument("--flash-attention", action="store_true", default=False)
     parser.add_argument(
         "--fp16",
@@ -129,8 +140,8 @@ class ClassifierDataCollator:
 
         input_ids, attention_mask = [], []
         consonant_labels, vowel_labels, stress_labels = [], [], []
-        texts = []
 
+        texts, ref_ipas = [], []
         for f in features:
             pad = max_len - len(f["input_ids"])
             input_ids.append(list(f["input_ids"]) + [self.pad_id] * pad)
@@ -139,6 +150,7 @@ class ClassifierDataCollator:
             vowel_labels.append(list(f["vowel_labels"]) + [self.ignore_id] * pad)
             stress_labels.append(list(f["stress_labels"]) + [self.ignore_id] * pad)
             texts.append(f.get("text", ""))
+            ref_ipas.append(f.get("ref_ipa", ""))
 
         return {
             "input_ids": torch.tensor(input_ids, dtype=torch.long),
@@ -147,121 +159,8 @@ class ClassifierDataCollator:
             "vowel_labels": torch.tensor(vowel_labels, dtype=torch.long),
             "stress_labels": torch.tensor(stress_labels, dtype=torch.long),
             "texts": texts,
+            "ref_ipas": ref_ipas,
         }
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def cosine_lr_lambda(step: int, warmup_steps: int, total_steps: int) -> float:
-    if step < warmup_steps:
-        return step / max(1, warmup_steps)
-    progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
-    return 0.5 * (1.0 + math.cos(math.pi * progress))
-
-
-def save_checkpoint(model, output_dir: Path, step: int, metrics: dict, save_total_limit: int):
-    ckpt_dir = output_dir / f"checkpoint-{step}"
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
-    from safetensors.torch import save_file
-    save_file(model.state_dict(), str(ckpt_dir / "model.safetensors"))
-    (ckpt_dir / "train_state.json").write_text(json.dumps({"step": step, **metrics}))
-    checkpoints = sorted([p for p in output_dir.glob("checkpoint-*") if p.name != "checkpoint-best"], key=lambda p: int(p.name.split("-")[1]))
-    while len(checkpoints) > save_total_limit:
-        shutil.rmtree(checkpoints.pop(0))
-
-
-def compute_accuracy(logits: torch.Tensor, labels: torch.Tensor) -> float:
-    """Per-token accuracy ignoring IGNORE_INDEX positions."""
-    mask = labels != IGNORE_INDEX
-    if mask.sum() == 0:
-        return 0.0
-    preds = logits.argmax(dim=-1)
-    return (preds[mask] == labels[mask]).float().mean().item()
-
-
-def _decode_labels(text: str, offset_mapping: list, consonant_labels, vowel_labels, stress_labels) -> str:
-    """Decode per-token label IDs into an IPA string using the same format as infer._decode."""
-    result = []
-    prev_char_end = 0
-    label_idx = 0
-    for tok_idx, (start, end) in enumerate(offset_mapping):
-        if start > prev_char_end:
-            result.append(text[prev_char_end:start])
-        if end - start != 1:
-            if end > start:
-                prev_char_end = end
-            continue
-        char = text[start:end]
-        prev_char_end = end
-        if not is_hebrew_letter(char):
-            if not (char == "'" and start > 0 and text[start - 1] in "גזצץ"):
-                result.append(char)
-            continue
-        if tok_idx >= len(consonant_labels):
-            break
-        c = int(consonant_labels[tok_idx])
-        v = int(vowel_labels[tok_idx])
-        s = int(stress_labels[tok_idx])
-        if c == IGNORE_INDEX:
-            continue
-        consonant = ID_TO_CONSONANT.get(c, "∅")
-        vowel = ID_TO_VOWEL.get(v, "∅")
-        chunk = ""
-        if consonant != "∅":
-            chunk += consonant
-        if s == STRESS_YES:
-            chunk += "ˈ"
-        if vowel != "∅":
-            chunk += vowel
-        result.append(chunk)
-    if prev_char_end < len(text):
-        result.append(text[prev_char_end:])
-    return "".join(result)
-
-
-def evaluate(model, eval_loader, device, fp16: bool, tokenizer, max_len: int) -> dict:
-    model.eval()
-    total_loss = 0.0
-    refs, hyps = [], []
-    vocab = build_tokenizer_vocab(tokenizer)
-
-    with torch.no_grad():
-        for batch in eval_loader:
-            texts = batch.pop("texts")
-            batch = {k: v.to(device) for k, v in batch.items()}
-            with torch.autocast("cuda", enabled=fp16):
-                out = model(**batch)
-            total_loss += out["loss"].item()
-
-            c_labels = batch["consonant_labels"].cpu().tolist()
-            v_labels = batch["vowel_labels"].cpu().tolist()
-            s_labels = batch["stress_labels"].cpu().tolist()
-
-            for i, text in enumerate(texts):
-                enc = tokenizer(text, truncation=True, max_length=max_len, return_offsets_mapping=True)
-                offset_mapping = enc["offset_mapping"]
-                refs.append(_decode_labels(text, offset_mapping, c_labels[i], v_labels[i], s_labels[i]))
-                hyps.append(_decode(
-                    text=text,
-                    offset_mapping=offset_mapping,
-                    consonant_logits=out["consonant_logits"][i],
-                    vowel_logits=out["vowel_logits"][i],
-                    stress_logits=out["stress_logits"][i],
-                ))
-
-    model.train()
-    mean_wer = sum(wer(r, h) for r, h in zip(refs, hyps)) / len(refs)
-    mean_cer = sum(cer(r, h) for r, h in zip(refs, hyps)) / len(refs)
-    return {
-        "eval_loss": total_loss / len(eval_loader),
-        "cer": mean_cer,
-        "wer": mean_wer,
-        "acc": 1 - mean_wer,
-        "refs": refs,
-        "hyps": hyps,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +178,8 @@ def main():
     if accelerator.is_main_process:
         wandb.init(project="hebrew-g2p-classifier", config=vars(args), mode=args.wandb_mode)
 
-    encoder_tokenizer = load_encoder_tokenizer()
+    tokenizer = load_tokenizer(TOKENIZER_PATH)
+
     train_dataset = AlignmentDataset(args.train_dataset)
     eval_dataset = AlignmentDataset(args.eval_dataset)
 
@@ -319,15 +219,12 @@ def main():
         model, optimizer, train_loader, eval_loader, scheduler
     )
 
-    # Restore step counter when resuming (skipped when --init-weights-only)
     opt_step = 0
     if args.init_from_checkpoint and not args.init_weights_only:
-        import json
         state_path = Path(args.init_from_checkpoint) / "train_state.json"
         if state_path.exists():
             saved = json.loads(state_path.read_text())
             opt_step = saved["step"]
-            # Fast-forward scheduler to correct LR
             for _ in range(opt_step):
                 scheduler.step()
             if accelerator.is_main_process:
@@ -357,6 +254,7 @@ def main():
                     print(f"\n[step {opt_step}] Encoder unfrozen.")
 
             batch.pop("texts", None)
+            batch.pop("ref_ipas", None)
             with accelerator.autocast():
                 out = model(**batch)
 
@@ -391,38 +289,36 @@ def main():
                         }, step=opt_step)
 
                     if opt_step % args.save_steps == 0:
-                        metrics = evaluate(accelerator.unwrap_model(model), eval_loader, device, args.fp16, encoder_tokenizer, MAX_LEN)
+                        metrics = evaluate(accelerator.unwrap_model(model), eval_loader, device, args.fp16, tokenizer, MAX_LEN)
                         wandb.log({k: v for k, v in metrics.items() if k not in ("refs", "hyps")}, step=opt_step)
-                        print(f"\n[step {opt_step}] CER: {metrics['cer']:.4f}  WER: {metrics['wer']:.4f}  Acc: {metrics['acc']:.1%}  loss: {metrics['eval_loss']:.4f}")
-                        for i, (ref, hyp) in enumerate(zip(metrics["refs"][:3], metrics["hyps"][:3]), 1):
-                            print(f"  {i}. GT:   {ref}")
-                            print(f"     Pred: {hyp}")
-                        save_checkpoint(accelerator.unwrap_model(model), output_dir, opt_step, {k: v for k, v in metrics.items() if k not in ("refs", "hyps")}, args.save_total_limit)
-                        if metrics["wer"] < best_wer:
+                        print(f"\n[step {opt_step}] acc={metrics.get('acc', float('nan')):.4f}  wer={metrics.get('wer', float('nan')):.4f}  cer={metrics.get('cer', float('nan')):.4f}  consonant={metrics['consonant_acc']:.4f}  vowel={metrics['vowel_acc']:.4f}  stress={metrics['stress_acc']:.4f}  loss={metrics['eval_loss']:.4f}")
+                        if "refs" in metrics:
+                            for i, (ref, hyp) in enumerate(zip(metrics["refs"][:3], metrics["hyps"][:3]), 1):
+                                print(f"  {i}. GT:   {ref}")
+                                print(f"     Pred: {hyp}")
+                        save_checkpoint(accelerator.unwrap_model(model), output_dir, opt_step, metrics.get("acc", metrics["mean_acc"]), args.save_total_limit)
+                        if metrics.get("wer", float("inf")) < best_wer:
                             best_wer = metrics["wer"]
                             no_improve_count = 0
                             best_ckpt_dir = output_dir / "checkpoint-best"
                             best_ckpt_dir.mkdir(parents=True, exist_ok=True)
                             from safetensors.torch import save_file
                             save_file(accelerator.unwrap_model(model).state_dict(), str(best_ckpt_dir / "model.safetensors"))
-                            (best_ckpt_dir / "train_state.json").write_text(json.dumps({"step": opt_step, **{k: v for k, v in metrics.items() if k not in ("refs", "hyps")}}))
+                            (best_ckpt_dir / "train_state.json").write_text(json.dumps({"step": opt_step, **metrics}))
                             print(f"  [checkpoint-best updated at step {opt_step}] [patience: {no_improve_count}/{args.early_stopping_patience}]")
                         else:
                             no_improve_count += 1
                             print(f"  [patience: {no_improve_count}/{args.early_stopping_patience}]")
                             if no_improve_count >= args.early_stopping_patience:
-                                print(f"[step {opt_step}] Early stopping: WER has not improved for {args.early_stopping_patience} evals (best={best_wer:.4f})")
+                                print(f"[step {opt_step}] Early stopping triggered (best wer={best_wer:.4f})")
                                 stop_training = True
                                 break
 
     if accelerator.is_main_process:
-        metrics = evaluate(accelerator.unwrap_model(model), eval_loader, device, args.fp16, encoder_tokenizer, MAX_LEN)
+        metrics = evaluate(accelerator.unwrap_model(model), eval_loader, device, args.fp16, tokenizer, MAX_LEN)
         wandb.log({k: v for k, v in metrics.items() if k not in ("refs", "hyps")})
-        print(f"\nFinal: CER: {metrics['cer']:.4f}  WER: {metrics['wer']:.4f}  Acc: {metrics['acc']:.1%}  loss: {metrics['eval_loss']:.4f}")
-        for i, (ref, hyp) in enumerate(zip(metrics["refs"][:3], metrics["hyps"][:3]), 1):
-            print(f"  {i}. GT:   {ref}")
-            print(f"     Pred: {hyp}")
-        save_checkpoint(accelerator.unwrap_model(model), output_dir, opt_step, {k: v for k, v in metrics.items() if k not in ("refs", "hyps")}, args.save_total_limit)
+        print(f"\nFinal: consonant_acc={metrics['consonant_acc']:.4f}  vowel_acc={metrics['vowel_acc']:.4f}  stress_acc={metrics['stress_acc']:.4f}  mean_acc={metrics['mean_acc']:.4f}  wer={metrics.get('wer', float('nan')):.4f}  cer={metrics.get('cer', float('nan')):.4f}")
+        save_checkpoint(accelerator.unwrap_model(model), output_dir, opt_step, metrics["mean_acc"], args.save_total_limit)
         wandb.finish()
 
 
