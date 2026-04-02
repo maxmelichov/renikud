@@ -5,9 +5,9 @@
 set -euo pipefail
 
 uv run src/train.py \
-  --train-dataset  dataset/.cache/vox-knesset-train \
-  --eval-dataset   dataset/.cache/pred_val \
-  --output-dir     outputs/knesset-ctc-vox \
+  --train-dataset  dataset/.cache/knesset-metadata-train \
+  --eval-dataset   dataset/.cache/gt-val \
+  --output-dir     outputs/knesset-ctc-metadata \
   --train-batch-size 64 \
   --eval-batch-size  64 \
   --epochs         3 \

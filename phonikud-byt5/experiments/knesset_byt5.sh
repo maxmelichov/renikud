@@ -5,13 +5,13 @@
 set -euo pipefail
 
 uv run torchrun --nproc_per_node=2 src/phonikud_byt5/run_train.py \
-  --data_dir      ../dataset/vox-knesset-ipa-v1.tsv \
-  --ckpt_dir      outputs/knesset-byt5-vox \
+  --data_dir      ../dataset/knesset_vox_new_asr.tsv \
+  --ckpt_dir      outputs/knesset-byt5-metadata \
   --model_name    google/byt5-small \
   --batch_size    8 \
   --learning_rate 5e-5 \
   --val_split     0 \
   --split_seed    42 \
-  --val_file      ../dataset/pred.tsv \
+  --val_file      ../dataset/gt.tsv \
   --eval_steps    500 \
   --wandb_mode    disabled

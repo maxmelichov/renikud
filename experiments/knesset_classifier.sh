@@ -5,9 +5,9 @@
 set -euo pipefail
 
 uv run src/train.py \
-  --train-dataset  dataset/vox-knesset-ipa-v1.tsv \
-  --eval-dataset   dataset/pred_alignment.jsonl \
-  --output-dir     outputs/knesset-classifier-vox \
+  --train-dataset  dataset/knesset_vox_new_asr.tsv \
+  --eval-dataset   dataset/gt_alignment.jsonl \
+  --output-dir     outputs/knesset-classifier-metadata \
   --train-batch-size 56 \
   --eval-batch-size  56 \
   --epochs         3 \
