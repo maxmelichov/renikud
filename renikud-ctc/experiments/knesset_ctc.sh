@@ -5,13 +5,13 @@
 set -euo pipefail
 
 uv run src/train.py \
-  --train-dataset  dataset/.cache/knesset_train \
+  --train-dataset  dataset/.cache/vox-knesset-train \
   --eval-dataset   dataset/.cache/pred_val \
-  --output-dir     outputs/knesset-ctc \
-  --train-batch-size 32 \
-  --eval-batch-size  32 \
+  --output-dir     outputs/knesset-ctc-vox \
+  --train-batch-size 64 \
+  --eval-batch-size  64 \
   --epochs         3 \
   --save-steps     500 \
-  --max-steps                20000 \
   --early-stopping-patience  40 \
-  --wandb-mode               disabled
+  --wandb-mode               disabled \
+  --device                   ${DEVICE:-cuda:1}

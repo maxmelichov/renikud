@@ -32,16 +32,16 @@ def cosine_lr_lambda(step: int, warmup_steps: int, total_steps: int) -> float:
     return 0.5 * (1.0 + math.cos(math.pi * progress))
 
 
-def save_checkpoint(model: torch.nn.Module, output_dir: Path, global_step: int, cer: float, save_total_limit: int):
+def save_checkpoint(model: torch.nn.Module, output_dir: Path, global_step: int, metrics: dict, save_total_limit: int):
     ckpt_dir = output_dir / f"checkpoint-{global_step}"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     from safetensors.torch import save_file
     save_file(model.state_dict(), str(ckpt_dir / "model.safetensors"))
-    (ckpt_dir / "train_state.json").write_text(json.dumps({"step": global_step, "cer": cer}))
+    (ckpt_dir / "train_state.json").write_text(json.dumps({"step": global_step, **metrics}))
 
     # Prune oldest checkpoints beyond limit
-    checkpoints = sorted(output_dir.glob("checkpoint-*"), key=lambda p: int(p.name.split("-")[1]))
+    checkpoints = sorted([p for p in output_dir.glob("checkpoint-*") if p.name != "checkpoint-best"], key=lambda p: int(p.name.split("-")[1]))
     while len(checkpoints) > save_total_limit:
         shutil.rmtree(checkpoints.pop(0))
 
@@ -81,7 +81,10 @@ def main():
     args = parse_args()
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if args.device:
+        device = torch.device(args.device)
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     wandb.init(project="hebrew-g2p", config=vars(args), mode=args.wandb_mode)
 
@@ -165,12 +168,19 @@ def main():
                     for i, (ref, hyp) in enumerate(zip(metrics["refs"][:3], metrics["hyps"][:3]), 1):
                         print(f"  {i}. GT:   {ref}")
                         print(f"     Pred: {hyp}")
-                    save_checkpoint(model, output_dir, opt_step, metrics["cer"], args.save_total_limit)
+                    save_checkpoint(model, output_dir, opt_step, {k: v for k, v in metrics.items() if k not in ("refs", "hyps")}, args.save_total_limit)
                     if metrics["wer"] < best_wer:
                         best_wer = metrics["wer"]
                         no_improve_count = 0
+                        best_ckpt_dir = output_dir / "checkpoint-best"
+                        best_ckpt_dir.mkdir(parents=True, exist_ok=True)
+                        from safetensors.torch import save_file
+                        save_file(model.state_dict(), str(best_ckpt_dir / "model.safetensors"))
+                        (best_ckpt_dir / "train_state.json").write_text(json.dumps({"step": opt_step, **{k: v for k, v in metrics.items() if k not in ("refs", "hyps")}}))
+                        print(f"  [checkpoint-best updated at step {opt_step}] [patience: {no_improve_count}/{args.early_stopping_patience}]")
                     else:
                         no_improve_count += 1
+                        print(f"  [patience: {no_improve_count}/{args.early_stopping_patience}]")
                         if no_improve_count >= args.early_stopping_patience:
                             print(f"[step {opt_step}] Early stopping: WER has not improved for {args.early_stopping_patience} evals (best={best_wer:.4f})")
                             stop_training = True
@@ -182,7 +192,7 @@ def main():
     for i, (ref, hyp) in enumerate(zip(metrics["refs"][:3], metrics["hyps"][:3]), 1):
         print(f"  {i}. GT:   {ref}")
         print(f"     Pred: {hyp}")
-    save_checkpoint(model, output_dir, opt_step, metrics["cer"], args.save_total_limit)
+    save_checkpoint(model, output_dir, opt_step, {k: v for k, v in metrics.items() if k not in ("refs", "hyps")}, args.save_total_limit)
 
 
 if __name__ == "__main__":

@@ -4,15 +4,14 @@
 # Run from phonikud-byt5/: bash experiments/knesset_byt5.sh
 set -euo pipefail
 
-uv run src/phonikud_byt5/run_train.py \
-  --data-dir      ../dataset/knesset_split \
-  --ckpt-dir      outputs/knesset-byt5 \
-  --model-name    google/byt5-small \
-  --batch-size    32 \
-  --learning-rate 5e-5 \
-  --val-split     0 \
-  --split-seed    42 \
-  --val-file      ../dataset/pred.tsv \
-  --eval-steps    500 \
-  --max-steps     20000 \
-  --wandb-mode    disabled
+uv run torchrun --nproc_per_node=2 src/phonikud_byt5/run_train.py \
+  --data_dir      ../dataset/vox-knesset-ipa-v1.tsv \
+  --ckpt_dir      outputs/knesset-byt5-vox \
+  --model_name    google/byt5-small \
+  --batch_size    8 \
+  --learning_rate 5e-5 \
+  --val_split     0 \
+  --split_seed    42 \
+  --val_file      ../dataset/pred.tsv \
+  --eval_steps    500 \
+  --wandb_mode    disabled

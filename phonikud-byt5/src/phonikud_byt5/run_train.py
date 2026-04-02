@@ -3,8 +3,16 @@
 import os
 import torch
 from transformers import T5ForConditionalGeneration, ByT5Tokenizer, Trainer, TrainingArguments, TrainerCallback
+from transformers.trainer_callback import PrinterCallback, ProgressCallback
+
+
+class SilentProgressCallback(ProgressCallback):
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        pass
 from torch.utils.data import Dataset
 import wandb
+import random
+from tqdm import tqdm
 
 from config import TrainArgs
 from utils import prepare_lines, calculate_wer_cer_metrics, log_metrics, TrainingLine, update_metadata_with_models
@@ -13,56 +21,91 @@ from utils import prepare_lines, calculate_wer_cer_metrics, log_metrics, Trainin
 class BestLastModelCallback(TrainerCallback):
     """Custom callback to save best and last models during training"""
     
-    def __init__(self, ckpt_dir, tokenizer, use_wandb=False):
+    def __init__(self, ckpt_dir, tokenizer, val_lines, use_wandb=False, patience=40):
         self.ckpt_dir = ckpt_dir
         self.tokenizer = tokenizer
+        self.val_lines = val_lines
         self.use_wandb = use_wandb
         self.best_eval_loss = float('inf')
+        self.best_wer = float('inf')
         self.best_step = 0
         self.last_eval_loss = None
         self.last_step = 0
-        print(f"🔍 DEBUG: BestLastModelCallback initialized with ckpt_dir={ckpt_dir}, use_wandb={use_wandb}")
+        self.patience = patience
+        self.no_improve_count = 0
     
+    def _compute_wer_cer(self, model, device, batch_size=16):
+        model.eval()
+        predictions, ground_truth = [], []
+        with torch.no_grad():
+            for i in range(0, len(self.val_lines), batch_size):
+                batch = self.val_lines[i:i + batch_size]
+                inputs = self.tokenizer(
+                    [line.unvocalized for line in batch],
+                    return_tensors='pt', padding=True, truncation=True, max_length=512
+                ).to(device)
+                output_ids = model.generate(**inputs, max_length=512)
+                for j, line in enumerate(batch):
+                    pred = self.tokenizer.decode(output_ids[j], skip_special_tokens=True)
+                    predictions.append(pred)
+                    ground_truth.append(line.vocalized)
+        return calculate_wer_cer_metrics(predictions, ground_truth), predictions, ground_truth
+
     def on_log(self, args, state, control, model=None, logs=None, **kwargs):
         """Called when metrics are logged - captures eval_loss"""
-        print(f"🔍 DEBUG: on_log called with logs: {logs}")
+        if not state.is_world_process_zero:
+            return
         if logs and 'eval_loss' in logs:
             current_eval_loss = logs['eval_loss']
             current_step = state.global_step
-            
+
             try:
+                device = next(model.parameters()).device
+                metrics, predictions, ground_truth = self._compute_wer_cer(model, device)
+                import json as _json
+                metrics_dict = {
+                    "step": current_step,
+                    "eval_loss": current_eval_loss,
+                    "cer": metrics.cer,
+                    "wer": metrics.wer,
+                    "acc": metrics.wer_accuracy / 100,
+                }
+
                 # Save last model (always)
                 last_model_path = f"{self.ckpt_dir}/last_model"
-                print(f"🔍 DEBUG: Saving last model to {last_model_path}")
                 model.save_pretrained(last_model_path)
                 self.tokenizer.save_pretrained(last_model_path)
-                print(f"📦 Last model saved successfully!")
-                
+                open(f"{last_model_path}/train_state.json", "w").write(_json.dumps(metrics_dict, indent=2))
+
                 self.last_eval_loss = current_eval_loss
                 self.last_step = current_step
-                
-                # Save best model (if improved)
-                if current_eval_loss < self.best_eval_loss:
+
+                # Save best model (if improved by WER)
+                is_best = metrics.wer < self.best_wer
+                if is_best:
                     self.best_eval_loss = current_eval_loss
+                    self.best_wer = metrics.wer
                     self.best_step = current_step
-                    
-                    best_model_path = f"{self.ckpt_dir}/best_model"
-                    print(f"🔍 DEBUG: Saving best model to {best_model_path}")
+                    self.no_improve_count = 0
+
+                    best_model_path = f"{self.ckpt_dir}/checkpoint-best"
                     model.save_pretrained(best_model_path)
                     self.tokenizer.save_pretrained(best_model_path)
-                    
-                    print(f"🏆 New best model saved! Loss: {self.best_eval_loss:.4f} (step {self.best_step})")
-                    
-                    # Log to wandb if enabled
-                    if self.use_wandb:
-                        wandb.log({
-                            "best_eval_loss": self.best_eval_loss,
-                            "best_model_step": self.best_step,
-                        }, step=current_step)
-                    
+                    open(f"{best_model_path}/train_state.json", "w").write(_json.dumps(metrics_dict, indent=2))
+                else:
+                    self.no_improve_count += 1
+
+                marker = " ✓ new best" if is_best else f"  patience: {self.no_improve_count}/{self.patience}"
+                tqdm.write(f"\n[step {current_step}] loss: {current_eval_loss:.4f}  CER: {metrics.cer:.4f}  WER: {metrics.wer:.4f}  Acc: {metrics.wer_accuracy:.1f}%{marker}")
+                for idx in random.sample(range(len(self.val_lines)), min(3, len(self.val_lines))):
+                    tqdm.write(f"  Src:  {self.val_lines[idx].unvocalized}")
+                    tqdm.write(f"  GT:   {ground_truth[idx]}")
+                    tqdm.write(f"  Pred: {predictions[idx]}")
+
+
                 # Update metadata
                 best_model_info = {
-                    "path": "best_model",
+                    "path": "checkpoint-best",
                     "eval_loss": self.best_eval_loss,
                     "step": self.best_step
                 }
@@ -87,7 +130,6 @@ class BestLastModelCallback(TrainerCallback):
                     last_model_info["wandb"] = wandb_info
                 
                 update_metadata_with_models(self.ckpt_dir, best_model_info, last_model_info)
-                print(f"📊 Models updated - Best: {self.best_eval_loss:.4f}, Last: {self.last_eval_loss:.4f}")
                     
             except Exception as e:
                 print(f"❌ ERROR in callback: {e}")
@@ -210,6 +252,7 @@ def main():
         learning_rate=args.learning_rate,
         warmup_steps=100,
         logging_steps=args.logging_steps,
+        log_level="error",
         eval_strategy="steps",
         eval_steps=args.eval_steps,
         save_strategy="no",  # Disable automatic checkpoint saving
@@ -219,7 +262,7 @@ def main():
     )
     
     # Initialize callback for saving best/last models
-    callback = BestLastModelCallback(args.ckpt_dir, tokenizer, use_wandb=(args.wandb_mode != "disabled"))
+    callback = BestLastModelCallback(args.ckpt_dir, tokenizer, val_lines, use_wandb=(args.wandb_mode != "disabled"))
     
     # Initialize trainer
     trainer = Trainer(
@@ -230,6 +273,9 @@ def main():
         processing_class=tokenizer,
         callbacks=[callback],
     )
+    trainer.remove_callback(PrinterCallback)
+    trainer.remove_callback(ProgressCallback)
+    trainer.add_callback(SilentProgressCallback)
     
     # Start training
     print("🏋️ Starting training...")
@@ -238,7 +284,7 @@ def main():
     print(f"✅ Training complete!")
     print(f"🏆 Best model: {callback.best_eval_loss:.4f} (step {callback.best_step})")
     print(f"📦 Last model: {callback.last_eval_loss:.4f} (step {callback.last_step})")
-    print(f"📁 Models saved in: {args.ckpt_dir}/best_model and {args.ckpt_dir}/last_model")
+    print(f"📁 Models saved in: {args.ckpt_dir}/checkpoint-best and {args.ckpt_dir}/last_model")
     print(f"📋 Metadata continuously updated during training")
     
     # Close wandb if it was initialized

@@ -5,14 +5,15 @@
 set -euo pipefail
 
 uv run src/train.py \
-  --train-dataset  dataset/knesset_phonemes_v1.txt \
-  --eval-dataset   dataset/knesset_split/val_alignment.jsonl \
-  --output-dir     outputs/knesset-classifier \
-  --train-batch-size 64 \
-  --eval-batch-size  64 \
+  --train-dataset  dataset/vox-knesset-ipa-v1.tsv \
+  --eval-dataset   dataset/pred_alignment.jsonl \
+  --output-dir     outputs/knesset-classifier-vox \
+  --train-batch-size 56 \
+  --eval-batch-size  56 \
   --epochs         3 \
   --encoder-lr     2e-5 \
   --head-lr        1e-4 \
   --save-steps     500 \
   --early-stopping-patience  40 \
-  --wandb-mode               disabled
+  --wandb-mode               disabled \
+  --device                   ${DEVICE:-cuda:0}

@@ -29,8 +29,9 @@ class MetricsResult:
 def read_lines(data_dir: str, max_context_length: int, max_lines: Optional[int] = None) -> List[TrainingLine]:
     """Read tab-separated text files and return TrainingLine objects"""
     lines = []
-    
-    for file_path in Path(data_dir).glob("*.txt"):
+    p = Path(data_dir)
+    file_paths = [p] if p.is_file() else list(p.glob("*.txt")) + list(p.glob("*.tsv"))
+    for file_path in file_paths:
         with open(file_path, 'r', encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
