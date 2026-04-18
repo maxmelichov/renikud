@@ -175,9 +175,15 @@ def main():
                     metrics = evaluate(model, eval_loader, device, args.fp16)
                     wandb.log({k: v for k, v in metrics.items() if k not in ("refs", "hyps")}, step=opt_step)
                     print(f"\n[step {opt_step}] CER: {metrics['cer']:.4f}  WER: {metrics['wer']:.4f}  Acc: {metrics['acc']:.1%}  loss: {metrics['eval_loss']:.4f}")
-                    for i, (ref, hyp) in enumerate(zip(metrics["refs"][:3], metrics["hyps"][:3]), 1):
-                        print(f"  {i}. GT:   {ref}")
-                        print(f"     Pred: {hyp}")
+                    seen, i = set(), 1
+                    for ref, hyp in zip(metrics["refs"], metrics["hyps"]):
+                        if ref not in seen:
+                            print(f"  {i}. GT:   {ref}")
+                            print(f"     Pred: {hyp}")
+                            seen.add(ref)
+                            i += 1
+                        if i > 3:
+                            break
                     save_checkpoint(model, output_dir, opt_step, metrics["cer"], args.save_total_limit)
                     if metrics["wer"] < best_wer:
                         best_wer = metrics["wer"]
@@ -189,8 +195,10 @@ def main():
                             "eval_loss": metrics["eval_loss"],
                         }
                         no_improve_count = 0
+                        print(f"  [checkpoint-best updated at step {opt_step}] [patience: {no_improve_count}/{args.early_stopping_patience}]")
                     else:
                         no_improve_count += 1
+                        print(f"  [patience: {no_improve_count}/{args.early_stopping_patience}]")
                         if no_improve_count >= args.early_stopping_patience:
                             print(f"[step {opt_step}] Early stopping: WER has not improved for {args.early_stopping_patience} evals (best={best_wer:.4f})")
                             stop_training = True
@@ -200,9 +208,11 @@ def main():
     metrics = evaluate(model, eval_loader, device, args.fp16)
     wandb.log(metrics)
     print(f"\nFinal: CER: {metrics['cer']:.4f}  WER: {metrics['wer']:.4f}  Acc: {metrics['acc']:.1%}  loss: {metrics['eval_loss']:.4f}")
-    for i, (ref, hyp) in enumerate(zip(metrics["refs"][:3], metrics["hyps"][:3]), 1):
-        print(f"  {i}. GT:   {ref}")
-        print(f"     Pred: {hyp}")
+    n = len(metrics["refs"])
+    sample_indices = [n // 4, n // 2, 3 * n // 4] if n >= 4 else list(range(min(3, n)))
+    for i, idx in enumerate(sample_indices, 1):
+        print(f"  {i}. GT:   {metrics['refs'][idx]}")
+        print(f"     Pred: {metrics['hyps'][idx]}")
     save_checkpoint(model, output_dir, opt_step, metrics["cer"], args.save_total_limit)
     if best_snapshot is not None:
         print(

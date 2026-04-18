@@ -14,4 +14,5 @@ uv run src/train.py \
   --save-steps     500 \
   --early-stopping-patience  40 \
   --wandb-mode               disabled \
-  --device                   cuda:1
+  --device                   cuda:1 \
+  --init-from-checkpoint     outputs/knesset-ctc-metadata/checkpoint-22000
