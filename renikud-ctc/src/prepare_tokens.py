@@ -13,7 +13,7 @@ from pathlib import Path
 from datasets import Dataset
 from tqdm import tqdm
 from constants import MAX_LEN
-from tokenization import encode_ipa, load_tokenizer
+from tokenization import encode_ipa, load_encoder_tokenizer
 
 
 def process_file(input_path: str, output_path: str, max_len: int):
@@ -28,7 +28,7 @@ def process_file(input_path: str, output_path: str, max_len: int):
                 print(f"Skipping {input_p.name} (cache is up to date)")
                 return
 
-    tokenizer = load_tokenizer()
+    tokenizer = load_encoder_tokenizer()
 
     lines = input_p.read_text(encoding="utf-8").strip().split("\n")
 

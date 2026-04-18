@@ -58,10 +58,14 @@ class AlignmentDataset(Dataset):
             obj = json.loads(line)
             hebrew, alignment = next(iter(obj.items()))
         else:
-            parts = line.rstrip("\n").split("\t", 1)
-            if len(parts) != 2:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 2:
                 return self[idx + 1]  # skip malformed
+            # gt.tsv has a 3rd "Field" column — ignore it; only hebrew + ipa matter.
             hebrew = strip_nikud(parts[0])
+            # Skip header row / anything with no Hebrew chars in the first column.
+            if not any("\u0590" <= c <= "\u05FF" for c in hebrew):
+                return self[idx + 1]
             alignment = align_sentence(hebrew, parts[1].strip())
             if alignment is None:
                 return self[idx + 1]  # skip failed alignment
@@ -312,6 +316,7 @@ def main():
     opt_step = 0
     optimizer.zero_grad()
     best_wer = float("inf")
+    best_snapshot: dict | None = None
     no_improve_count = 0
     stop_training = False
 
@@ -368,6 +373,13 @@ def main():
                     save_checkpoint(model, output_dir, opt_step, {k: v for k, v in metrics.items() if k not in ("refs", "hyps")}, args.save_total_limit)
                     if metrics["wer"] < best_wer:
                         best_wer = metrics["wer"]
+                        best_snapshot = {
+                            "step": opt_step,
+                            "wer": metrics["wer"],
+                            "cer": metrics["cer"],
+                            "acc": metrics["acc"],
+                            "eval_loss": metrics["eval_loss"],
+                        }
                         no_improve_count = 0
                         best_ckpt_dir = output_dir / "checkpoint-best"
                         best_ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -389,6 +401,13 @@ def main():
         print(f"  {i}. GT:   {ref}")
         print(f"     Pred: {hyp}")
     save_checkpoint(model, output_dir, opt_step, {k: v for k, v in metrics.items() if k not in ("refs", "hyps")}, args.save_total_limit)
+
+    if best_snapshot is not None:
+        print(
+            f"\nBest: step={best_snapshot['step']}  CER: {best_snapshot['cer']:.4f}  "
+            f"WER: {best_snapshot['wer']:.4f}  Acc: {best_snapshot['acc']:.1%}  "
+            f"loss: {best_snapshot['eval_loss']:.4f}"
+        )
 
 
 if __name__ == "__main__":

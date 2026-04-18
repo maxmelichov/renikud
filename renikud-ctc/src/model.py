@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import AutoConfig, AutoModel
+from transformers import AutoModel
 
 from constants import (
     CTC_BLANK_ID,
@@ -14,6 +14,7 @@ from constants import (
     PROJECTION_DIM,
     UPSAMPLE_FACTOR,
 )
+from tokenization import unwrap_encoder_model
 
 
 class HebrewG2PCTC(nn.Module):
@@ -31,8 +32,10 @@ class HebrewG2PCTC(nn.Module):
         if upsample_factor < 1:
             raise ValueError("upsample_factor must be >= 1")
 
+        from transformers import AutoConfig
         config = AutoConfig.from_pretrained(encoder_model, trust_remote_code=True)
-        self.encoder = AutoModel.from_config(config, trust_remote_code=True)
+        encoder = AutoModel.from_config(config, trust_remote_code=True)
+        self.encoder = unwrap_encoder_model(encoder)
         self.upsample_factor = upsample_factor
 
         hidden_size = self.encoder.config.hidden_size

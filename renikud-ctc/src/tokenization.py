@@ -107,9 +107,19 @@ def beam_search_ctc(log_probs: list[list[float]], beam_size: int) -> str:
     return decode_ipa(list(best_prefix), skip_special=True)
 
 
+def unwrap_encoder_model(encoder):
+    """Unwrap Dicta's diacritization model wrapper when present."""
+    return encoder.bert if hasattr(encoder, "bert") else encoder
+
+
 @lru_cache(maxsize=1)
-def load_tokenizer(model_name: str = ENCODER_MODEL) -> PreTrainedTokenizerFast:
+def load_encoder_tokenizer(model_name: str = ENCODER_MODEL) -> PreTrainedTokenizerFast:
+    """
+    Load the encoder tokenizer securely. 
+    Bypasses the broken AutoTokenizer logic for character-level models.
+    """
     tokenizer_file = hf_hub_download(repo_id=model_name, filename="tokenizer.json")
+    
     return PreTrainedTokenizerFast(
         tokenizer_file=tokenizer_file,
         unk_token="[UNK]",

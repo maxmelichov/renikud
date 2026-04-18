@@ -2,7 +2,7 @@
 
 from typing import Final
 
-ENCODER_MODEL: Final[str] = "dicta-il/dictabert-char"
+ENCODER_MODEL: Final[str] = "dicta-il/dictabert-large-char"
 MAX_LEN: Final[int] = 256
 
 # ---------------------------------------------------------------------------

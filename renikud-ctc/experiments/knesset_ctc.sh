@@ -14,4 +14,4 @@ uv run src/train.py \
   --save-steps     500 \
   --early-stopping-patience  40 \
   --wandb-mode               disabled \
-  --device                   cuda:0
+  --device                   cuda:1

@@ -108,9 +108,14 @@ class HebrewG2PClassifier(nn.Module):
         encoder_outputs = self.encoder(
             input_ids=input_ids,
             attention_mask=attention_mask,
+            output_hidden_states=True,
             return_dict=True,
         )
-        hidden = self.dropout(encoder_outputs.last_hidden_state)  # [B, S, H]
+        # `dictabert-large-char-menaked` wraps BERT with a nikud head and
+        # returns `MenakedOutput` (no `last_hidden_state`). Grab the final
+        # transformer layer via `hidden_states` instead — works for both
+        # plain BERT and the menaked wrapper.
+        hidden = self.dropout(encoder_outputs.hidden_states[-1])  # [B, S, H]
 
         consonant_logits = self.consonant_head(hidden)  # [B, S, NUM_CONSONANT_CLASSES]
         vowel_logits = self.vowel_head(hidden)           # [B, S, NUM_VOWEL_CLASSES]

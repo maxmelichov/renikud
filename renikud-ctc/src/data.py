@@ -9,20 +9,25 @@ import torch
 from datasets import Dataset, load_from_disk
 
 from constants import MAX_LEN
-from tokenization import encode_ipa, load_tokenizer
+from tokenization import encode_ipa, load_encoder_tokenizer
 
 
 def _load_tsv(path: str) -> Dataset:
-    tokenizer = load_tokenizer()
+    """Load a raw TSV (hebrew<TAB>ipa[<TAB>field...]) and tokenize up-front."""
+    tokenizer = load_encoder_tokenizer()
     rows = {"encoder_ids": [], "encoder_mask": [], "decoder_ids": []}
     skipped = 0
     for line in Path(path).read_text(encoding="utf-8").strip().split("\n"):
         parts = line.split("\t")
-        if len(parts) != 2:
+        if len(parts) < 2:
             skipped += 1
             continue
         hebrew, ipa = parts[0].strip(), parts[1].strip()
         if not hebrew or not ipa:
+            skipped += 1
+            continue
+        # Skip header row and any line whose first column isn't Hebrew.
+        if not any("\u0590" <= c <= "\u05FF" for c in hebrew):
             skipped += 1
             continue
         enc = tokenizer(hebrew, truncation=True, max_length=MAX_LEN, return_tensors="np")
@@ -39,13 +44,15 @@ def _load_tsv(path: str) -> Dataset:
     return Dataset.from_dict(rows)
 
 
-def load_tokenized_dataset(path: str) -> Dataset:
+def load_tokenized_dataset(path: str):
+    """Load a dataset from either a raw TSV or a pretokenized Arrow directory."""
     if path.endswith(".tsv") or path.endswith(".txt"):
         return _load_tsv(path)
     return load_from_disk(path)
 
 
 def load_dataset_splits(train_path: str, eval_path: str):
+    """Load train/eval datasets from disk."""
     train_dataset = load_tokenized_dataset(train_path)
     eval_dataset = load_tokenized_dataset(eval_path)
     return train_dataset, eval_dataset
