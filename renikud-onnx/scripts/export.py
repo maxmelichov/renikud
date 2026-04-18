@@ -13,16 +13,34 @@ import tempfile
 from pathlib import Path
 
 # Must be set before importing model/encoder so NeoBERT uses ONNX-compatible ops
-os.environ["NEOBERT_ONNX_EXPORT"] = "1"
+os.environ["ONNX_EXPORT"] = "1"
 
 import onnx
 import torch
 from onnxruntime.quantization import QuantType, quantize_dynamic
-from constants import CONSONANTS, VOWELS, TOKENIZER_PATH
+from phonology import CONSONANTS, VOWELS
 from infer import load_checkpoint
 from model import G2PModel
 from phonology import HEBREW_LETTER_CONSONANT_IDS as HEBREW_LETTER_TO_ALLOWED_CONSONANTS, HEBREW_LETTER_CONSONANTS, LETTERS_WITH_GERESH
 from tokenization import load_tokenizer
+
+
+def add_metadata(onnx_model, vocab: dict, tokenizer) -> None:
+    meta = onnx_model.metadata_props
+
+    def add(key: str, value) -> None:
+        entry = meta.add()
+        entry.key = key
+        entry.value = value if isinstance(value, str) else json.dumps(value)
+
+    add("vocab", vocab)
+    add("consonant_vocab", {str(i): c for i, c in enumerate(CONSONANTS)})
+    add("vowel_vocab", {str(i): v for i, v in enumerate(VOWELS)})
+    add("letter_consonant_constraints", {letter: list(ids) for letter, ids in HEBREW_LETTER_TO_ALLOWED_CONSONANTS.items()})
+    add("cls_token_id", str(tokenizer.cls_token_id))
+    add("sep_token_id", str(tokenizer.sep_token_id))
+    add("letter_consonant_mask", {letter: list(ids) for letter, ids in HEBREW_LETTER_TO_ALLOWED_CONSONANTS.items()})
+    add("geresh_map", {letter: HEBREW_LETTER_CONSONANTS[letter][1] for letter in LETTERS_WITH_GERESH if letter in HEBREW_LETTER_CONSONANTS and len(HEBREW_LETTER_CONSONANTS[letter]) >= 2})
 
 
 def main():
@@ -32,7 +50,7 @@ def main():
     parser.add_argument("--int8", action=argparse.BooleanOptionalAction, default=True, help="Quantize weights to INT8 (dynamic quantization, no calibration needed)")
     args = parser.parse_args()
 
-    tokenizer = load_tokenizer(TOKENIZER_PATH)
+    tokenizer = load_tokenizer()
     vocab = tokenizer.get_vocab()  # {token: id}
     tokenizer_vocab = {v: k for k, v in vocab.items()}  # {id: token}
 
@@ -74,40 +92,7 @@ def main():
         Path(export_path + ".data").unlink(missing_ok=True)
 
     onnx_model = onnx.load(args.output, load_external_data=True)
-    meta = onnx_model.metadata_props
-
-    entry = meta.add()
-    entry.key = "vocab"
-    entry.value = json.dumps(vocab)
-
-    entry = meta.add()
-    entry.key = "consonant_vocab"
-    entry.value = json.dumps({str(i): c for i, c in enumerate(CONSONANTS)})
-
-    entry = meta.add()
-    entry.key = "vowel_vocab"
-    entry.value = json.dumps({str(i): v for i, v in enumerate(VOWELS)})
-
-    entry = meta.add()
-    entry.key = "letter_consonant_constraints"
-    entry.value = json.dumps({letter: list(ids) for letter, ids in HEBREW_LETTER_TO_ALLOWED_CONSONANTS.items()})
-
-    entry = meta.add()
-    entry.key = "cls_token_id"
-    entry.value = str(tokenizer.cls_token_id)
-
-    entry = meta.add()
-    entry.key = "sep_token_id"
-    entry.value = str(tokenizer.sep_token_id)
-
-    entry = meta.add()
-    entry.key = "letter_consonant_mask"
-    entry.value = json.dumps({letter: list(ids) for letter, ids in HEBREW_LETTER_TO_ALLOWED_CONSONANTS.items()})
-
-    entry = meta.add()
-    entry.key = "geresh_map"
-    entry.value = json.dumps({letter: HEBREW_LETTER_CONSONANTS[letter][1] for letter in LETTERS_WITH_GERESH if letter in HEBREW_LETTER_CONSONANTS and len(HEBREW_LETTER_CONSONANTS[letter]) >= 2})
-
+    add_metadata(onnx_model, vocab, tokenizer)
     onnx.save_model(onnx_model, args.output, save_as_external_data=False)
 
     data_file = Path(args.output + ".data")

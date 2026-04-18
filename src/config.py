@@ -25,14 +25,15 @@ def parse_args():
     parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
     parser.add_argument("--max-grad-norm", type=float, default=1.0)
     parser.add_argument("--freeze-encoder-steps", type=int, default=0)
-    parser.add_argument("--init-from-checkpoint", type=str, default=None)
-    parser.add_argument("--init-weights-only", action="store_true", default=False, help="Load weights from checkpoint but reset step counter and scheduler (for finetuning on new data)")
-    parser.add_argument("--wandb-mode", type=str, default="offline", choices=["online", "offline", "disabled"])
+    parser.add_argument("--resume", type=str, default=None)
+    parser.add_argument("--reset-steps", action="store_true", default=False, help="Load weights from checkpoint but reset step counter and scheduler (for finetuning on new data)")
     parser.add_argument(
         "--fp16",
         action=argparse.BooleanOptionalAction,
         default=torch.cuda.is_available(),
     )
+    parser.add_argument("--save-epochs", action="store_true", default=False, help="Save a checkpoint at the end of each epoch (never pruned)")
+    parser.add_argument("--save-best", action="store_true", default=False, help="Save best checkpoint by WER to output_dir/best/")
     parser.add_argument("--flash-attention", action="store_true", default=False)
     parser.add_argument("--dataloader-workers", type=int, default=0)
     return parser.parse_args()

@@ -1,7 +1,7 @@
 """Run inference with the Hebrew G2P classifier model.
 
 Usage:
-    uv run src/infer.py --checkpoint outputs/g2p-classifier/checkpoint-5000 --text "שלום עולם"
+    uv run src/infer.py --checkpoint outputs/g2p-classifier/step-5000 --text "שלום עולם"
 """
 
 from __future__ import annotations
@@ -10,11 +10,13 @@ import argparse
 from pathlib import Path
 
 import torch
+from safetensors.torch import load_file
 
-from constants import MAX_LEN, TOKENIZER_PATH
-from decoder import build_tokenizer_vocab, decode
+from constants import MAX_LEN
+from decoder import decode
 from model import G2PModel
-from tokenization import load_tokenizer
+from phonology import normalize_graphemes
+from tokenization import load_tokenizer, id_to_token
 
 
 def parse_args():
@@ -26,22 +28,14 @@ def parse_args():
 
 
 def load_checkpoint(model: G2PModel, checkpoint_dir: str) -> None:
-    from safetensors.torch import load_file
-    import torch
-    base = Path(checkpoint_dir)
-    safetensors_path = base / "model.safetensors"
-    bin_path = base / "pytorch_model.bin"
-    if safetensors_path.exists():
-        state = load_file(str(safetensors_path), device="cpu")
-    elif bin_path.exists():
-        state = torch.load(bin_path, map_location="cpu", weights_only=True)
-    else:
-        raise FileNotFoundError(f"No checkpoint weights found in {checkpoint_dir}")
-    model.load_state_dict(state, strict=False)
+    state = load_file(str(Path(checkpoint_dir) / "model.safetensors"), device="cpu")
+    model.load_state_dict(state)
 
 
 def phonemize(text: str, model: G2PModel, tokenizer, device: torch.device, max_len: int) -> str:
     """Convert unvocalized Hebrew text to IPA using the classifier model."""
+    text = normalize_graphemes(text)
+
     encoding = tokenizer(
         text,
         truncation=True,
@@ -57,7 +51,7 @@ def phonemize(text: str, model: G2PModel, tokenizer, device: torch.device, max_l
         out = model(
             input_ids=input_ids,
             attention_mask=attention_mask,
-            tokenizer_vocab=build_tokenizer_vocab(tokenizer),
+            tokenizer_vocab=id_to_token(tokenizer),
         )
 
     return decode(
@@ -73,7 +67,7 @@ def main():
     args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    tokenizer = load_tokenizer(TOKENIZER_PATH)
+    tokenizer = load_tokenizer()
     model = G2PModel()
     load_checkpoint(model, args.checkpoint)
     model.to(device).eval()

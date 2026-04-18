@@ -23,19 +23,41 @@
 ## Upload Checkpoint to HuggingFace
 
 ```console
-./scripts/upload_checkpoint.sh outputs/g2p-classifier/checkpoint-5000
+./scripts/ckpt_upload.sh outputs/g2p-classifier/checkpoint-5000
 ```
+
+## Export to ONNX
+
+From the repository root, pass a checkpoint directory (paths relative to the repo root). An optional second argument sets the output filename (default `model.onnx`, written under `renikud-onnx/`).
+
+```console
+./scripts/ckpt_export.sh outputs/g2p-augmented/checkpoint-1500
+./scripts/ckpt_export.sh outputs/g2p-classifier/checkpoint-5000
+./scripts/ckpt_export.sh outputs/g2p-augmented/checkpoint-1500 my-model.onnx
+```
+
+The script wraps `renikud-onnx/scripts/export.py`. Vocabulary and related metadata are embedded in the `.onnx` file, so no extra files are needed at inference time.
+
+## Benchmark
+
+Run the Hebrew G2P benchmark against a checkpoint. If `gt.tsv` is missing in the repo root, the script downloads it from [heb-g2p-benchmark](https://github.com/thewh1teagle/heb-g2p-benchmark).
+
+```console
+./scripts/train_bench.sh outputs/g2p-classifier/checkpoint-5000
+```
+
+Optional: `./scripts/train_bench.sh outputs/g2p-classifier/checkpoint-5000 --save report.txt`
 
 ## Download Checkpoint
 
 ```console
-./scripts/download_checkpoint.sh                  # downloads to ./checkpoint
+./scripts/ckpt_download.sh                  # downloads to ./checkpoint
 ```
 
 To fine-tune from a downloaded checkpoint:
 
 ```console
-./scripts/download_checkpoint.sh checkpoint
+./scripts/ckpt_download.sh checkpoint
 ./scripts/train_finetune.sh checkpoint
 ```
 

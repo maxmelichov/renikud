@@ -6,7 +6,7 @@ import re
 
 import torch
 
-from constants import (
+from phonology import (
     ID_TO_CONSONANT,
     ID_TO_VOWEL,
     CONSONANT_TO_ID,
@@ -14,22 +14,20 @@ from constants import (
     VOWEL_NONE,
     STRESS_YES,
     STRESS_MARK,
+    HEBREW_LETTER_CONSONANT_IDS,
+    HEBREW_LETTER_CONSONANTS,
+    FURTIVE_PATAH_LETTER,
+    FURTIVE_PATAH_IPA,
+    LETTERS_WITH_GERESH,
     is_hebrew_letter,
+    ORTHOGRAPHIC_MARKERS,
 )
-from phonology import HEBREW_LETTER_CONSONANT_IDS, FURTIVE_PATAH_LETTER, FURTIVE_PATAH_IPA, LETTERS_WITH_GERESH
-
-
-def build_tokenizer_vocab(tokenizer) -> dict[int, str]:
-    """Map token_id -> single character string for Hebrew letter lookup."""
-    vocab = tokenizer.get_vocab()
-    return {v: k for k, v in vocab.items()}
 
 
 def _best_stress_per_word(offset_mapping: list[tuple[int, int]], text: str, stress_logits: torch.Tensor) -> set[int]:
     """
-    For each whitespace-delimited word, pick at most one token index to carry stress —
-    the one with the highest stress logit score among those that predicted stress.
-    Returns a set of token indices that are allowed to emit stress.
+    Hebrew words carry exactly one stress. Enforce this by picking the token with the
+    highest stress logit per word, returning the set of token indices allowed to emit stress.
     """
     word_spans = [(m.start(), m.end()) for m in re.finditer(r"\S+", text)]
     words: dict[int, list[int]] = {i: [] for i in range(len(word_spans))}
@@ -77,8 +75,9 @@ def decode(
         prev_char_end = end
 
         if not is_hebrew_letter(char):
-            # Skip geresh apostrophe after letters that use it as a digraph marker
-            if char == "'" and start > 0 and text[start - 1] in LETTERS_WITH_GERESH:
+            # Orthographic markers (geresh, gershayim) have no phonetic realization 
+            # and should not appear in the IPA output
+            if char in ORTHOGRAPHIC_MARKERS:
                 pass
             else:
                 result.append(char)
@@ -97,7 +96,6 @@ def decode(
 
         # Geresh rule: if next char is apostrophe, force the geresh consonant variant
         if char in LETTERS_WITH_GERESH and end < len(text) and text[end] == "'":
-            from phonology import HEBREW_LETTER_CONSONANTS
             variants = HEBREW_LETTER_CONSONANTS.get(char, ())
             if len(variants) >= 2:
                 consonant = variants[1]

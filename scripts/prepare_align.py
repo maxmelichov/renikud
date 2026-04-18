@@ -15,8 +15,7 @@ from phonology import ORTHOGRAPHIC_MARKERS, normalize_graphemes
 
 # Compiled regex is faster
 MARKERS = "".join(ORTHOGRAPHIC_MARKERS)
-# Keep Hebrew letters, geresh (U+05F3 and ASCII apostrophe) and orthographic markers
-HEB_RE = re.compile(rf"[^\u05d0-\u05ea\u05f3'{re.escape(MARKERS)}]")
+HEB_RE = re.compile(rf"[^\u05d0-\u05ea{re.escape(MARKERS)}]")
 IPA_RE = re.compile(r"[^abdefghijklmnoprstuvwzɡʁʃʒʔˈχ]")
 NIKUD_RE = re.compile(r"[\p{M}|]")
 
@@ -38,11 +37,11 @@ def align_sentence(heb: str, ipa: str) -> list[tuple[str, str]] | None:
         ipa_core = IPA_RE.sub("", iw)
         if not heb_core:
             continue
-
+        
         aligned = align_word(heb_core, ipa_core)
         if aligned is None:
             return None
-
+        
         if result:
             result.append((" ", " "))
         result.extend(aligned)
@@ -53,13 +52,13 @@ def process_line(line: str) -> str | tuple[str, str]:
     heb_raw, sep, ipa = line.strip().partition("\t")
     if not sep:
         return "FAIL_EMPTY"
-
+    
     # Treat hyphens as word boundaries in IPA as well to match Hebrew normalization
     ipa = ipa.replace("-", " ")
-
+    
     heb = normalize(heb_raw)
     result = align_sentence(heb, ipa)
-
+    
     if result is not None:
         # Return serialized JSON directly to avoid pickling complex objects
         return ("SUCCESS", json.dumps({"hebrew": heb, "alignment": result, "phonemes": ipa}, ensure_ascii=False))
@@ -71,26 +70,33 @@ def main():
     parser.add_argument("input", help="Input TSV")
     parser.add_argument("output", help="Output JSONL")
     parser.add_argument("--workers", type=int, default=os.cpu_count())
-    parser.add_argument("--chunk_size", type=int, default=1000)
+    parser.add_argument("--chunk_size", type=int, default=1000) # Balanced for responsiveness
     args = parser.parse_args()
 
     failures_path = args.output.replace(".jsonl", "_failures.txt")
-
+    
     aligned_count = 0
     failed_count = 0
 
+    # Use a ProcessPoolExecutor for heavy CPU tasks
+    # In Python 3.14, this is highly optimized
     with (
         open(args.input, "r", encoding="utf-8") as fin,
         open(args.output, "w", encoding="utf-8") as fout,
         open(failures_path, "w", encoding="utf-8") as ffail,
         concurrent.futures.ProcessPoolExecutor(max_workers=args.workers) as executor
     ):
+        # We use a generator to stream lines so we don't load the file into RAM
+        # chunksize=1000 keeps the workers busy without overwhelming the queue
         results = executor.map(process_line, fin, chunksize=args.chunk_size)
-
+        
+        # tqdm now shows real progress because we are streaming
+        # Note: We don't have a 'total' unless we count lines first, 
+        # but the responsiveness is instant.
         for status_info in tqdm(results, desc="Aligning"):
             if status_info == "FAIL_EMPTY":
                 continue
-
+            
             status, data = status_info
             if status == "SUCCESS":
                 fout.write(data + "\n")

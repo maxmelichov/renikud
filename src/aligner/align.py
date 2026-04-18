@@ -3,7 +3,7 @@ import functools
 HEBREW_LETTER_CONSONANTS: dict[str, tuple[str, ...]] = {
     "א": ("ʔ", ""),
     "ב": ("b", "v"),
-    "ג": ("ɡ", "dʒ"),
+    "ג": ("ɡ", "dʒ"), 
     "ד": ("d",),
     "ה": ("h", ""),
     "ו": ("v", "w", ""),
@@ -59,7 +59,7 @@ def align_word(heb_word: str, ipa_word: str) -> list[tuple[str, str]] | None:
         for cons in allowed_cons:
             if cons and not rest_ipa.startswith(cons):
                 continue
-
+            
             c_len = len(cons)
             for has_stress in (True, False):
                 s_len = 0
@@ -67,7 +67,7 @@ def align_word(heb_word: str, ipa_word: str) -> list[tuple[str, str]] | None:
                     if (c_len < len(rest_ipa)) and rest_ipa[c_len] == STRESS:
                         s_len = 1
                     else: continue
-
+                
                 for v in (*VOWELS, ""):
                     v_start = c_len + s_len
                     if v and rest_ipa[v_start:].startswith(v):
@@ -75,7 +75,7 @@ def align_word(heb_word: str, ipa_word: str) -> list[tuple[str, str]] | None:
                     elif not v:
                         v_len = 0
                     else: continue
-
+                    
                     total_step = v_start + v_len
                     res = search(h_idx + 1, i_idx + total_step)
                     if res is not None:
@@ -91,7 +91,7 @@ def align_word(heb_word: str, ipa_word: str) -> list[tuple[str, str]] | None:
                     res = search(h_idx + 1, i_idx + step)
                     if res is not None:
                         return ((char, rest_ipa[:step]),) + res
-
+        
         return None
 
     result = search(0, 0)

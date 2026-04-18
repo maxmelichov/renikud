@@ -32,6 +32,13 @@ Custom character-level tokenizer (`src/tokenization.py`) with a 104-token vocab:
 
 Each character is its own token. The tokenizer is built deterministically from code — no external file needed until `save_tokenizer()` is called.
 
+## Hebrew Markers
+
+People write Hebrew markers differently (e.g. using English `'`/`"` or Hebrew `׳`/`״`). We keep it simple:
+1. **Normalize**: We convert all those variations into standard English `'` and `"`. Hyphens (`-`) are replaced with spaces to split words.
+2. **Train**: We map `'` and `"` to an empty sound so the model learns they are just silent markers in the text.
+3. **Infer**: We drop `'` and `"` completely from the final IPA output so the pronunciation stays clean.
+
 ## Label Vocabulary
 
 **Consonants** (25 + ∅): `∅ b v d h z χ t j k l m n s f p ts tʃ w ʔ ɡ ʁ ʃ ʒ dʒ`
@@ -44,11 +51,11 @@ Each character is its own token. The tokenizer is built deterministically from c
 
 ```
 raw TSV (hebrew<TAB>ipa)
-  → data_align.py      DP aligner: assigns one IPA chunk per Hebrew letter → JSONL
-  → data_tokenize.py   tokenize + map labels to token positions → Arrow dataset
+  → scripts/prepare_align.py   DP aligner: assigns one IPA chunk per Hebrew letter → JSONL
+  → scripts/prepare_tokens.py  tokenize + map labels to token positions → Arrow dataset
   → train.py           training loop
 ```
 
-The DP aligner in `data_align.py` is constrained by `HEBREW_CONSONANTS` — only phonetically valid chunks are considered for each letter, which dramatically prunes the search space and prevents invalid alignments.
+The aligner (`src/aligner/align.py`) uses constrained recursive search with memoization to assign one IPA chunk per Hebrew letter. Each letter can only match consonants from its `HEBREW_LETTER_CONSONANTS` entry, which prunes the search space and prevents invalid alignments. `scripts/align.py` parallelizes this across sentences.
 
 Label alignment uses `offset_mapping`: only single-character token positions (offset `end - start == 1`) that correspond to Hebrew letters receive labels. CLS, SEP, spaces, and punctuation get `IGNORE_INDEX = -100`.

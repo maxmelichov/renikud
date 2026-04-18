@@ -14,7 +14,6 @@ dependencies = [
     "tqdm>=4.67.3",
     "transformers[torch]>=5.2.0",
     "huggingface-hub>=1.5.0",
-    "wandb>=0.25.0",
     "accelerate>=1.12.0",
     "xformers>=0.0.35",
 ]
@@ -51,6 +50,11 @@ torch = [
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 
@@ -62,3 +66,6 @@ members = [
     "renikud-onnx",
 ]
 
+
+[tool.pytest.ini_options]
+disable_test_id_escaping_and_forfeit_all_rights_to_community_support = true
