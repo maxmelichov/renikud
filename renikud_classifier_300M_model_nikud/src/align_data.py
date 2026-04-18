@@ -1,248 +1,151 @@
 """
-Align Hebrew characters to IPA chunks using a DP aligner.
+Extract per-character nikud labels from vocalized Hebrew text.
 
-Each Hebrew letter is assigned exactly one IPA chunk (consonant + optional vowel + optional stress).
-The alignment is constrained by the known possible phonemes per Hebrew letter.
+Each Hebrew letter maps to a pair:
+  (base_char, nikud_str)
+
+where nikud_str is the full combining-mark sequence after the letter
+(dagesh + vowel, or just vowel, or MAT_LECT, or '').
+The shin/sin dot is kept as part of nikud_str so callers can split it out
+if they need the separate shin head.
+
+Input:  one vocalized Hebrew sentence per line (TSV uses column 1)
+Output: JSONL, one object per line — key = bare Hebrew,
+        value = list of [char, nikud_str] pairs.
 
 Usage:
-    uv run src/align_data.py dataset/train.txt ./dataset/train_alignment.jsonl
-
-Input TSV:   hebrew_text<TAB>ipa_text  (one sentence per line, Hebrew may have nikud)
-Output JSONL: one JSON object per line, key=hebrew sentence, value=[[char, ipa_chunk], ...]
-              failures saved to <output>_failures.txt
+    uv run src/align_data.py input.tsv output.jsonl
 """
+
+from __future__ import annotations
 
 import argparse
 import json
 import unicodedata
-import regex as re
 from tqdm import tqdm
 
+from constants import (
+    NIKUD_TO_ID,
+    SHIN_TO_ID,
+    SHIN_LETTER,
+    MAT_LECT_TOKEN,
+    is_hebrew_letter,
+    strip_nikud,
+)
 
-# ---------------------------------------------------------------------------
-# Hebrew letter -> allowed leading consonants (the IPA token that starts its chunk)
-# ∅ means the letter can be silent (emit nothing)
-# ---------------------------------------------------------------------------
-HEBREW_CONSONANTS: dict[str, tuple[str, ...]] = {
-    "א": ("ʔ", ""),
-    "ב": ("b", "v"),
-    "ג": ("ɡ", "dʒ"),
-    "ד": ("d",),
-    "ה": ("h", ""),
-    "ו": ("v", "w", ""),      # can also be the vowel u/o — handled via vowel-only path
-    "ז": ("z", "ʒ"),
-    "ח": ("χ",),
-    "ט": ("t",),
-    "י": ("j", ""),            # can also be the vowel i — handled via vowel-only path
-    "כ": ("k", "χ"),
-    "ך": ("k", "χ"),
-    "ל": ("l",),
-    "מ": ("m",),
-    "ם": ("m",),
-    "נ": ("n",),
-    "ן": ("n",),
-    "ס": ("s",),
-    "ע": ("ʔ", ""),
-    "פ": ("p", "f"),
-    "ף": ("p", "f"),
-    "צ": ("ts", "tʃ"),
-    "ץ": ("ts", "tʃ"),
-    "ק": ("k",),
-    "ר": ("ʁ",),
-    "ש": ("ʃ", "s"),
-    "ת": ("t",),
-}
-
-VOWELS = ("a", "e", "i", "o", "u")
-STRESS = "ˈ"
-SPACE = " "
+# Letters that can act as matres lectionis (silent vowel markers) in Hebrew
+MAT_LECT_LETTERS: frozenset[str] = frozenset("אהוי")
 
 
-def strip_nikud(text: str) -> str:
-    text = unicodedata.normalize("NFD", text)
-    return re.sub(r"[\p{M}|]", "", text)
-
-
-def align_word(heb_word: str, ipa_word: str) -> list[tuple[str, str]] | None:
+def _resolve_nikud(combining: list[str]) -> str:
     """
-    Align a single Hebrew word to its IPA using DP.
-    Returns list of (hebrew_char, ipa_chunk) or None if no valid alignment found.
-
-    Each IPA chunk has the form: [consonant] [stress?] [vowel?]
-    where consonant comes from the letter's allowed set.
+    Map a list of combining characters (excluding shin/sin dot) to a NIKUD_CLASSES label.
+    Tries canonical order first, then reversed (some texts put vowel before dagesh).
+    Falls back to '' on unknown combination.
     """
-    n = len(heb_word)
-    m = len(ipa_word)
-
-    # dp[i][j] = True if we can align heb_word[:i] to ipa_word[:j]
-    # back[i][j] = j_prev to reconstruct the path
-    dp = [[False] * (m + 1) for _ in range(n + 1)]
-    back = [[-1] * (m + 1) for _ in range(n + 1)]
-    dp[0][0] = True
-
-    for i in range(1, n + 1):
-        char = heb_word[i - 1]
-        allowed = HEBREW_CONSONANTS.get(char, ("",))
-
-        for j_prev in range(m + 1):
-            if not dp[i - 1][j_prev]:
-                continue
-
-            rest = ipa_word[j_prev:]
-
-            # Try each allowed consonant for this letter
-            for consonant in allowed:
-                pos = 0
-
-                # Match consonant prefix
-                if consonant and not rest[pos:].startswith(consonant):
-                    continue
-                pos += len(consonant)
-
-                # Optionally consume stress mark
-                stress_pos = pos
-                if pos < len(rest) and rest[pos] == STRESS:
-                    stress_pos = pos + 1
-
-                # Try with and without stress, with and without vowel
-                for s in (stress_pos, pos):  # with stress or without
-                    # Try each vowel or no vowel
-                    for vowel in VOWELS + ("",):
-                        v_pos = s
-                        if vowel:
-                            if not rest[s:].startswith(vowel):
-                                continue
-                            v_pos = s + len(vowel)
-                        j_new = j_prev + v_pos
-                        if j_new <= m and not dp[i][j_new]:
-                            dp[i][j_new] = True
-                            back[i][j_new] = j_prev
-
-            # Special case: word-final ח consumes [stress?]aχ.
-            # The preceding vowel (o/u/e) is handled by the ו/י special case above.
-            # For words without a preceding vowel letter (e.g. שמח -> samˈeaχ),
-            # also allow consuming [vowel]aχ as a fallback.
-            # Only applies when ח is the last letter of the word (i == n).
-            if char == "ח" and i == n:
-                for prefix in ("aχ", "ˈaχ"):
-                    if rest.startswith(prefix):
-                        j_new = j_prev + len(prefix)
-                        if j_new <= m:
-                            dp[i][j_new] = True
-                            back[i][j_new] = j_prev
-                for vowel in VOWELS:
-                    for prefix in (f"{vowel}aχ", f"ˈ{vowel}aχ"):
-                        if rest.startswith(prefix):
-                            j_new = j_prev + len(prefix)
-                            if j_new <= m and not dp[i][j_new]:
-                                dp[i][j_new] = True
-                                back[i][j_new] = j_prev
-
-            # Special case: ו/י as pure vowel (u, o, i) with optional stress
-            if char in ("ו", "י"):
-                vowel_map = {"ו": ("u", "o"), "י": ("i",)}
-                for vowel in vowel_map[char]:
-                    for s_offset in (0, 1):  # without/with preceding stress
-                        pos = 0
-                        if s_offset and (not rest or rest[0] != STRESS):
-                            continue
-                        pos += s_offset
-                        if rest[pos:].startswith(vowel):
-                            j_new = j_prev + pos + len(vowel)
-                            if j_new <= m and not dp[i][j_new]:
-                                dp[i][j_new] = True
-                                back[i][j_new] = j_prev
-
-    if not dp[n][m]:
-        return None
-
-    # Reconstruct path
-    chunks = []
-    j = m
-    for i in range(n, 0, -1):
-        j_prev = back[i][j]
-        chunks.append((heb_word[i - 1], ipa_word[j_prev:j]))
-        j = j_prev
-    chunks.reverse()
-    return chunks
+    nikud_str = "".join(combining)
+    if nikud_str in NIKUD_TO_ID:
+        return nikud_str
+    rev = "".join(reversed(combining))
+    if rev in NIKUD_TO_ID:
+        return rev
+    return ""
 
 
-def align_sentence(heb: str, ipa: str) -> list[tuple[str, str]] | None:
+def extract_nikud(vocalized: str) -> list[tuple[str, str]] | None:
     """
-    Align a full sentence by splitting on spaces and aligning word by word.
-    Non-Hebrew characters (punctuation, digits) are stripped before alignment.
-    Spaces are passed through as (' ', ' ').
+    Decompose a vocalized Hebrew string into per-base-letter pairs:
+        (base_char, nikud_str)
+
+    nikud_str encodes the vowel/dagesh part (from NIKUD_CLASSES).
+    Shin/sin dot is NOT included in nikud_str — it is stored separately.
+    Use split_nikud_shin() to separate them when needed.
+
+    Returns None on error (empty result).
     """
-    heb_words = heb.split(" ")
-    ipa_words = ipa.split(" ")
+    nfd = unicodedata.normalize("NFD", vocalized)
+    result: list[tuple[str, str]] = []
 
-    if len(heb_words) != len(ipa_words):
-        return None
+    i = 0
+    while i < len(nfd):
+        ch = nfd[i]
+        i += 1
 
-    result = []
-    for i, (hw, iw) in enumerate(zip(heb_words, ipa_words)):
-        if not hw:
+        if not is_hebrew_letter(ch):
             continue
 
-        # Keep only Hebrew letters for alignment
-        heb_core = re.sub(r"[^\u05d0-\u05ea]", "", hw)
-        # Keep only IPA phoneme characters (strip punctuation like . , ? !)
-        ipa_core = re.sub(r"[^\w\u02c8\u0294\u0261\u0281\u0283\u0292χʁʃʒʔɡˈaeiou]", "", iw)
+        # Collect all combining marks that follow this base letter
+        combining: list[str] = []
+        while i < len(nfd) and unicodedata.category(nfd[i]).startswith("M"):
+            combining.append(nfd[i])
+            i += 1
 
-        if not heb_core:
-            continue
+        # Separate shin/sin dot — keep it aside, don't mix into nikud_str
+        shin_dot: str | None = None
+        if ch == SHIN_LETTER:
+            shin_marks = [c for c in combining if c in SHIN_TO_ID]
+            if shin_marks:
+                shin_dot = shin_marks[0]
+            combining = [c for c in combining if c not in SHIN_TO_ID]
 
-        aligned = align_word(heb_core, ipa_core)
-        if aligned is None:
-            return None
-        result.extend(aligned)
+        # Resolve the remaining marks to a NIKUD_CLASSES label
+        if combining:
+            nikud_label = _resolve_nikud(combining)
+        elif ch in MAT_LECT_LETTERS:
+            nikud_label = MAT_LECT_TOKEN
+        else:
+            nikud_label = ""
 
-        if i < len(heb_words) - 1:
-            result.append((" ", " "))
+        result.append((ch, nikud_label))
 
-    return result
+    return result if result else None
+
+
+def split_nikud_shin(char: str, nikud_str: str) -> tuple[str, str | None]:
+    """
+    Given a (char, nikud_str) pair, return (nikud_label, shin_label_or_None).
+    Shin/sin dot information is not in nikud_str; it must be re-extracted from
+    the original text by the caller (this helper is a no-op placeholder kept
+    for API compatibility).
+    """
+    return nikud_str, None
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Align Hebrew chars to IPA chunks via DP")
-    parser.add_argument("input", help="Input TSV file (hebrew<TAB>ipa)")
-    parser.add_argument("output", help="Output JSONL file (one sentence per line)")
+    parser = argparse.ArgumentParser(description="Extract per-character nikud labels from vocalized Hebrew")
+    parser.add_argument("input", help="Input file (vocalized Hebrew, one sentence per line; TSV uses column 1)")
+    parser.add_argument("output", help="Output JSONL file")
     args = parser.parse_args()
 
     total = 0
-    aligned_count = 0
-    failed_count = 0
+    ok = 0
+    failed = 0
 
     failures_path = args.output.replace(".jsonl", "_failures.txt")
     with open(args.input, encoding="utf-8") as fin, \
          open(args.output, "w", encoding="utf-8") as fout, \
          open(failures_path, "w", encoding="utf-8") as ffail:
 
-        lines = fin.readlines()
-        for line in tqdm(lines, desc="Aligning"):
+        for line in tqdm(fin, desc="Extracting"):
             line = line.strip()
             if not line:
                 continue
-            parts = line.split("\t")
-            if len(parts) != 2:
-                continue
-
-            heb_raw, ipa = parts
-            heb = strip_nikud(heb_raw)
+            vocalized = line.split("\t", 1)[0]
+            bare = strip_nikud(vocalized)
             total += 1
 
-            result = align_sentence(heb, ipa)
-            if result is None:
-                failed_count += 1
-                ffail.write(f"{heb}\t{ipa}\n")
+            pairs = extract_nikud(vocalized)
+            if pairs is None:
+                failed += 1
+                ffail.write(f"{vocalized}\n")
                 continue
 
-            aligned_count += 1
-            fout.write(json.dumps({heb: result}, ensure_ascii=False) + "\n")
+            ok += 1
+            fout.write(json.dumps({bare: pairs}, ensure_ascii=False) + "\n")
 
-    print(f"\nTotal:    {total:,}")
-    print(f"Aligned:  {aligned_count:,} ({aligned_count/total:.1%})")
-    print(f"Failed:   {failed_count:,} ({failed_count/total:.1%})")
+    print(f"\nTotal:   {total:,}")
+    print(f"OK:      {ok:,} ({ok/total:.1%})" if total else "")
+    print(f"Failed:  {failed:,} ({failed/total:.1%})" if total else "")
 
 
 if __name__ == "__main__":

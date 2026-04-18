@@ -12,6 +12,23 @@ Each Hebrew letter gets exactly one output slot predicting a (consonant, vowel, 
 
 See `docs/ARCHITECTURE.md` for full design details.
 
+## Main training data (nikud)
+
+Primary diacritized-Hebrew corpora for this variant of the project:
+
+| Source | Role | Upstream |
+|--------|------|----------|
+| **UNIKUD** | Large mixed web + public-domain nikud data ([`data/`](https://github.com/morrisalp/unikud/tree/main/data), DVC) | [morrisalp/unikud](https://github.com/morrisalp/unikud) |
+| **Nakdimon** | `hebrew_diacritized` training set (git submodule) | [elazarg/nakdimon](https://github.com/elazarg/nakdimon) · [elazarg/hebrew_diacritized](https://github.com/elazarg/hebrew_diacritized) |
+
+Vendor both under `third_party/` (ignored by git) and pull UNIKUD blobs with DVC:
+
+```console
+bash scripts/fetch_main_nikud_data.sh
+```
+
+Resolved paths are exposed in `src/constants.py` as `THIRD_PARTY_UNIKUD_DATA`, `THIRD_PARTY_NAKDIMON_HEBREW_DIACRITIZED`, etc.
+
 ## Data Preparation
 
 ```console

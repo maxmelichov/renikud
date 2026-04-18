@@ -26,7 +26,7 @@ from infer import _decode, build_tokenizer_vocab
 from model import HebrewG2PClassifier
 from align_data import align_sentence, strip_nikud
 from prepare_tokens import process_sentence
-from tokenization import load_encoder_tokenizer
+from tokenization import load_tokenizer
 
 
 # ---------------------------------------------------------------------------
@@ -51,7 +51,7 @@ class AlignmentDataset(Dataset):
         return len(self.lines)
 
     def __getitem__(self, idx):
-        tokenizer = load_encoder_tokenizer()
+        tokenizer = load_tokenizer()
         line = self.lines[idx]
 
         if self.is_jsonl:
@@ -273,7 +273,7 @@ def main():
 
     wandb.init(project="hebrew-g2p-classifier", config=vars(args), mode=args.wandb_mode)
 
-    encoder_tokenizer = load_encoder_tokenizer()
+    encoder_tokenizer = load_tokenizer()
     train_dataset = AlignmentDataset(args.train_dataset)
     eval_dataset = AlignmentDataset(args.eval_dataset)
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-from transformers import AutoModel
+from transformers import AutoConfig, AutoModel
 
 from constants import (
     ENCODER_MODEL,
@@ -15,7 +15,6 @@ from constants import (
     IGNORE_INDEX,
     is_hebrew_letter,
 )
-from tokenization import unwrap_encoder_model
 
 
 class HebrewG2PClassifier(nn.Module):
@@ -34,8 +33,8 @@ class HebrewG2PClassifier(nn.Module):
     def __init__(self, encoder_model: str = ENCODER_MODEL, dropout_rate: float = 0.1) -> None:
         super().__init__()
 
-        encoder = AutoModel.from_pretrained(encoder_model, trust_remote_code=True)
-        self.encoder = unwrap_encoder_model(encoder)
+        config = AutoConfig.from_pretrained(encoder_model, trust_remote_code=True)
+        self.encoder = AutoModel.from_config(config, trust_remote_code=True)
         hidden_size = self.encoder.config.hidden_size
 
         self.dropout = nn.Dropout(dropout_rate)

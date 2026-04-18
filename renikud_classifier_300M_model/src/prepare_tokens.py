@@ -27,7 +27,7 @@ from constants import (
     IGNORE_INDEX,
     is_hebrew_letter,
 )
-from tokenization import load_encoder_tokenizer
+from tokenization import load_tokenizer
 
 STRESS_MARK = "ˈ"
 VOWELS_SET = set("aeiou")
@@ -164,7 +164,7 @@ def main():
     parser.add_argument("output", help="Output Arrow dataset directory")
     args = parser.parse_args()
 
-    tokenizer = load_encoder_tokenizer()
+    tokenizer = load_tokenizer()
 
     records = []
     skipped = 0

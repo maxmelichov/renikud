@@ -3,18 +3,49 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import torch
-from datasets import load_from_disk
+from datasets import Dataset, load_from_disk
+
+from constants import MAX_LEN
+from tokenization import encode_ipa, load_tokenizer
 
 
-def load_tokenized_dataset(path: str):
-    """Load a pretokenized Arrow dataset from disk."""
+def _load_tsv(path: str) -> Dataset:
+    tokenizer = load_tokenizer()
+    rows = {"encoder_ids": [], "encoder_mask": [], "decoder_ids": []}
+    skipped = 0
+    for line in Path(path).read_text(encoding="utf-8").strip().split("\n"):
+        parts = line.split("\t")
+        if len(parts) != 2:
+            skipped += 1
+            continue
+        hebrew, ipa = parts[0].strip(), parts[1].strip()
+        if not hebrew or not ipa:
+            skipped += 1
+            continue
+        enc = tokenizer(hebrew, truncation=True, max_length=MAX_LEN, return_tensors="np")
+        try:
+            dec = encode_ipa(ipa)
+        except ValueError:
+            skipped += 1
+            continue
+        rows["encoder_ids"].append(enc["input_ids"][0].tolist())
+        rows["encoder_mask"].append(enc["attention_mask"][0].tolist())
+        rows["decoder_ids"].append(dec)
+    if skipped:
+        print(f"Skipped {skipped} rows from {path}")
+    return Dataset.from_dict(rows)
+
+
+def load_tokenized_dataset(path: str) -> Dataset:
+    if path.endswith(".tsv") or path.endswith(".txt"):
+        return _load_tsv(path)
     return load_from_disk(path)
 
 
 def load_dataset_splits(train_path: str, eval_path: str):
-    """Load train/eval datasets from disk."""
     train_dataset = load_tokenized_dataset(train_path)
     eval_dataset = load_tokenized_dataset(eval_path)
     return train_dataset, eval_dataset

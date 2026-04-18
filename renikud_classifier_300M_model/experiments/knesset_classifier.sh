@@ -5,12 +5,12 @@
 set -euo pipefail
 
 uv run src/train.py \
-  --train-dataset  dataset/vox-knesset-ipa-v1.tsv \
-  --eval-dataset   dataset/pred_alignment.jsonl \
+  --train-dataset  /home/maxm/renikud/dataset/pairs_filtered.tsv \
+  --eval-dataset   /home/maxm/renikud/dataset/gt.tsv \
   --output-dir     outputs/knesset-classifier-vox \
-  --train-batch-size 56 \
-  --eval-batch-size  56 \
-  --epochs         3 \
+  --train-batch-size 128 \
+  --eval-batch-size  128 \
+  --epochs         1000 \
   --encoder-lr     2e-5 \
   --head-lr        1e-4 \
   --save-steps     500 \

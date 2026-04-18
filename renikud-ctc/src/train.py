@@ -22,7 +22,7 @@ from data import G2PDataCollator, load_dataset_splits
 from evaluate import compute_metrics
 from infer import load_checkpoint_into_model
 from model import HebrewG2PCTC
-from tokenization import load_encoder_tokenizer
+from tokenization import load_tokenizer
 
 
 def cosine_lr_lambda(step: int, warmup_steps: int, total_steps: int) -> float:
@@ -89,7 +89,7 @@ def main():
     wandb.init(project="hebrew-g2p", config=vars(args), mode=args.wandb_mode)
 
     train_dataset, eval_dataset = load_dataset_splits(args.train_dataset, args.eval_dataset)
-    encoder_tokenizer = load_encoder_tokenizer()
+    encoder_tokenizer = load_tokenizer()
     collator = G2PDataCollator(encoder_pad_id=encoder_tokenizer.pad_token_id or 0)
 
     train_loader = DataLoader(train_dataset, batch_size=args.train_batch_size, shuffle=True, collate_fn=collator)

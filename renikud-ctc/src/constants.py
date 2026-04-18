@@ -4,7 +4,7 @@ from typing import Final
 import string
 
 VOCAB_VERSION: Final[str] = "hebrew-ipa-char-v1"
-ENCODER_MODEL: Final[str] = "dicta-il/dictabert-large-char-menaked"
+ENCODER_MODEL: Final[str] = "dicta-il/dictabert-char"
 MAX_LEN: Final[int] = 256
 PROJECTION_DIM: Final[int] = 256
 UPSAMPLE_FACTOR: Final[int] = 2

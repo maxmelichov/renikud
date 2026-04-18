@@ -10,7 +10,7 @@ import numpy as np
 
 from constants import MAX_LEN
 from model import HebrewG2PCTC
-from tokenization import beam_search_ctc, decode_ctc, load_encoder_tokenizer
+from tokenization import beam_search_ctc, decode_ctc, load_tokenizer
 
 ALLOWED_MISSING_CHECKPOINT_KEYS = {"layer_norm.weight", "layer_norm.bias"}
 
@@ -61,7 +61,7 @@ def main():
     args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    tokenizer = load_encoder_tokenizer()
+    tokenizer = load_tokenizer()
     encoded = tokenizer(
         args.text,
         truncation=True,

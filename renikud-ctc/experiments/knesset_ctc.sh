@@ -5,13 +5,13 @@
 set -euo pipefail
 
 uv run src/train.py \
-  --train-dataset  dataset/.cache/knesset-metadata-train \
-  --eval-dataset   dataset/.cache/gt-val \
+  --train-dataset  /home/maxm/renikud/dataset/pairs_filtered.tsv \
+  --eval-dataset   /home/maxm/renikud/dataset/gt.tsv \
   --output-dir     outputs/knesset-ctc-metadata \
-  --train-batch-size 64 \
-  --eval-batch-size  64 \
-  --epochs         3 \
+  --train-batch-size 128 \
+  --eval-batch-size  128 \
+  --epochs         1000 \
   --save-steps     500 \
   --early-stopping-patience  40 \
   --wandb-mode               disabled \
-  --device                   ${DEVICE:-cuda:1}
+  --device                   cuda:0

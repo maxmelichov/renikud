@@ -16,7 +16,7 @@ import torch
 from constants import MAX_LEN
 from infer import load_checkpoint, phonemize
 from model import HebrewG2PClassifier
-from tokenization import load_encoder_tokenizer
+from tokenization import load_tokenizer
 
 checkpoint = sys.argv[1] if len(sys.argv) > 1 else None
 if not checkpoint:
@@ -24,7 +24,7 @@ if not checkpoint:
     sys.exit(1)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-tokenizer = load_encoder_tokenizer()
+tokenizer = load_tokenizer()
 model = HebrewG2PClassifier()
 load_checkpoint(model, checkpoint)
 model.to(device).eval()

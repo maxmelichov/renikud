@@ -1,4 +1,4 @@
-"""Hebrew G2P classifier model — per-character prediction of consonant, vowel, and stress."""
+"""Hebrew nikud classifier model — per-character prediction of nikud class and shin/sin dot."""
 
 from __future__ import annotations
 
@@ -8,24 +8,20 @@ from transformers import AutoModel
 
 from constants import (
     ENCODER_MODEL,
-    NUM_CONSONANT_CLASSES,
-    NUM_VOWEL_CLASSES,
-    NUM_STRESS_CLASSES,
-    HEBREW_LETTER_TO_ALLOWED_CONSONANTS,
+    NUM_NIKUD_CLASSES,
+    NUM_SHIN_CLASSES,
     IGNORE_INDEX,
-    is_hebrew_letter,
 )
 from tokenization import unwrap_encoder_model
 
 
-class HebrewG2PClassifier(nn.Module):
+class HebrewNikudClassifier(nn.Module):
     """
-    Per-character Hebrew G2P model.
+    Per-character Hebrew nikud prediction model.
 
     For each Hebrew letter in the input, predicts:
-      - consonant class (from a per-letter constrained set)
-      - vowel class     (a / e / i / o / u / ∅)
-      - stress          (yes / no)
+      - nikud class  (one of NIKUD_CLASSES: empty / MAT_LECT / dagesh / vowel / dagesh+vowel)
+      - shin/sin dot (SHIN_CLASSES; IGNORE_INDEX for all letters except ש)
 
     Non-Hebrew characters (spaces, punctuation, digits, Latin) are passed
     through unchanged at inference — the heads are never called for them.
@@ -40,71 +36,15 @@ class HebrewG2PClassifier(nn.Module):
 
         self.dropout = nn.Dropout(dropout_rate)
 
-        # Three independent classification heads
-        self.consonant_head = nn.Linear(hidden_size, NUM_CONSONANT_CLASSES)
-        self.vowel_head = nn.Linear(hidden_size, NUM_VOWEL_CLASSES)
-        self.stress_head = nn.Linear(hidden_size, NUM_STRESS_CLASSES)
-
-        # Precompute consonant mask: [vocab_size, NUM_CONSONANT_CLASSES]
-        # mask[i, j] = True means consonant class j is FORBIDDEN for Hebrew letter i
-        # Built once at init, moved to device on first forward pass
-        self._consonant_mask: torch.Tensor | None = None
-        self._build_consonant_mask()
-
-    def _build_consonant_mask(self) -> None:
-        """
-        Build a boolean mask [num_hebrew_letters, NUM_CONSONANT_CLASSES].
-        True = this consonant class is forbidden for this letter.
-        Hebrew letters are indexed by (ord(char) - ord('א')).
-        """
-        from constants import ALEF_ORD, TAF_ORD
-        n_letters = TAF_ORD - ALEF_ORD + 1
-        # Start with all forbidden, then allow the valid ones
-        mask = torch.ones(n_letters, NUM_CONSONANT_CLASSES, dtype=torch.bool)
-        for char, allowed_ids in HEBREW_LETTER_TO_ALLOWED_CONSONANTS.items():
-            idx = ord(char) - ALEF_ORD
-            for cid in allowed_ids:
-                mask[idx, cid] = False
-        self._consonant_mask = mask
-
-    def _apply_consonant_mask(
-        self,
-        consonant_logits: torch.Tensor,
-        input_ids: torch.Tensor,
-        tokenizer_vocab: dict[int, str],
-    ) -> torch.Tensor:
-        """
-        Zero out forbidden consonant classes for each position based on the
-        input Hebrew character at that position.
-
-        consonant_logits: [B, S, NUM_CONSONANT_CLASSES]
-        input_ids:        [B, S]
-        tokenizer_vocab:  maps token_id -> character string
-        """
-        from constants import ALEF_ORD
-        mask = self._consonant_mask.to(consonant_logits.device)
-        B, S, _ = consonant_logits.shape
-        masked = consonant_logits.clone()
-
-        for b in range(B):
-            for s in range(S):
-                token_id = input_ids[b, s].item()
-                char = tokenizer_vocab.get(token_id, "")
-                if len(char) == 1 and is_hebrew_letter(char):
-                    letter_idx = ord(char) - ALEF_ORD
-                    # Set forbidden logits to -inf
-                    masked[b, s][mask[letter_idx]] = -1e9
-
-        return masked
+        self.nikud_head = nn.Linear(hidden_size, NUM_NIKUD_CLASSES)
+        self.shin_head = nn.Linear(hidden_size, NUM_SHIN_CLASSES)
 
     def forward(
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
-        consonant_labels: torch.Tensor | None = None,
-        vowel_labels: torch.Tensor | None = None,
-        stress_labels: torch.Tensor | None = None,
-        tokenizer_vocab: dict[int, str] | None = None,
+        nikud_labels: torch.Tensor | None = None,
+        shin_labels: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         encoder_outputs = self.encoder(
             input_ids=input_ids,
@@ -113,28 +53,19 @@ class HebrewG2PClassifier(nn.Module):
         )
         hidden = self.dropout(encoder_outputs.last_hidden_state)  # [B, S, H]
 
-        consonant_logits = self.consonant_head(hidden)  # [B, S, NUM_CONSONANT_CLASSES]
-        vowel_logits = self.vowel_head(hidden)           # [B, S, NUM_VOWEL_CLASSES]
-        stress_logits = self.stress_head(hidden)         # [B, S, NUM_STRESS_CLASSES]
-
-        # Apply per-letter consonant mask if vocab provided
-        if tokenizer_vocab is not None:
-            consonant_logits = self._apply_consonant_mask(consonant_logits, input_ids, tokenizer_vocab)
+        nikud_logits = self.nikud_head(hidden)  # [B, S, NUM_NIKUD_CLASSES]
+        shin_logits = self.shin_head(hidden)    # [B, S, NUM_SHIN_CLASSES]
 
         output: dict[str, torch.Tensor] = {
-            "consonant_logits": consonant_logits,
-            "vowel_logits": vowel_logits,
-            "stress_logits": stress_logits,
+            "nikud_logits": nikud_logits,
+            "shin_logits": shin_logits,
         }
 
-        if consonant_labels is not None:
+        if nikud_labels is not None:
             loss_fct = nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX)
-            loss = (
-                loss_fct(consonant_logits.view(-1, NUM_CONSONANT_CLASSES), consonant_labels.view(-1))
-                + loss_fct(vowel_logits.view(-1, NUM_VOWEL_CLASSES), vowel_labels.view(-1))
-                + loss_fct(stress_logits.view(-1, NUM_STRESS_CLASSES), stress_labels.view(-1))
-            )
-            output["loss"] = loss
+            nikud_loss = loss_fct(nikud_logits.view(-1, NUM_NIKUD_CLASSES), nikud_labels.view(-1))
+            shin_loss = loss_fct(shin_logits.view(-1, NUM_SHIN_CLASSES), shin_labels.view(-1))
+            output["loss"] = nikud_loss + shin_loss
 
         return output
 

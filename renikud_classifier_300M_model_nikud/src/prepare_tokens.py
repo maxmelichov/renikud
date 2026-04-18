@@ -1,160 +1,115 @@
 """
-Prepare tokenized Arrow dataset from aligned JSONL for classifier training.
+Prepare tokenized Arrow dataset for nikud classifier training.
 
-Reads train_alignment.jsonl produced by align_data.py and produces an Arrow
-dataset with per-character consonant, vowel, and stress labels aligned to
-BERT token positions.
+Reads JSONL produced by align_data.py (bare_hebrew -> [[char, nikud_label], ...])
+and produces an Arrow dataset with per-token nikud and shin labels.
 
 Usage:
     uv run src/prepare_tokens.py dataset/train_alignment.jsonl dataset/.cache/classifier-train
-    uv run src/prepare_tokens.py dataset/val_alignment.jsonl dataset/.cache/classifier-val
+    uv run src/prepare_tokens.py dataset/val_alignment.jsonl   dataset/.cache/classifier-val
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
+import unicodedata
 
 import datasets
 from tqdm import tqdm
 
 from constants import (
-    CONSONANT_TO_ID,
-    VOWEL_TO_ID,
-    STRESS_YES,
-    STRESS_NONE,
+    NIKUD_TO_ID,
+    SHIN_TO_ID,
+    SHIN_LETTER,
     IGNORE_INDEX,
     is_hebrew_letter,
+    strip_nikud,
 )
 from tokenization import load_encoder_tokenizer
 
-STRESS_MARK = "ˈ"
-VOWELS_SET = set("aeiou")
 
-
-def parse_ipa_chunk(chunk: str) -> tuple[str, str, int]:
+def _extract_shin(vocalized: str) -> dict[int, str]:
     """
-    Parse an IPA chunk into (consonant, vowel, stress).
-
-    Chunk format: [ˈ][consonant][vowel]  e.g. "ʃa", "lˈo", "∅", "ˈa", "bi"
-    Returns (consonant_str, vowel_str, stress_int) where:
-      - consonant_str is the consonant or "∅" if silent/none
-      - vowel_str is the vowel or "∅" if none
-      - stress_int is STRESS_YES or STRESS_NONE
+    Return a mapping from bare-string char position -> shin/sin dot char
+    for each ש in the vocalized text.
     """
-    if not chunk or chunk == " ":
-        return ("∅", "∅", STRESS_NONE)
-
-    pos = 0
-    stress = STRESS_NONE
-
-    # Stress mark comes before the vowel in the chunk
-    if STRESS_MARK in chunk:
-        stress = STRESS_YES
-        chunk = chunk.replace(STRESS_MARK, "")
-
-    # Try to match known multi-char consonants first (ts, tʃ, dʒ)
-    consonant = "∅"
-    for multi in ("tʃ", "dʒ", "ts"):
-        if chunk.startswith(multi):
-            consonant = multi
-            pos = len(multi)
-            break
-    else:
-        # Single char consonant or vowel-only
-        if pos < len(chunk) and chunk[pos] not in VOWELS_SET:
-            consonant = chunk[pos]
-            pos += 1
-
-    # Remaining is the vowel
-    vowel = chunk[pos:] if pos < len(chunk) else "∅"
-    if not vowel:
-        vowel = "∅"
-
-    # Special case: [vowel]aχ pattern (word-final ח) e.g. "uaχ", "oaχ", "eaχ"
-    # The aligner assigns the whole diphthong to ח — aχ encodes the full coda, consonant is ∅
-    if vowel not in VOWEL_TO_ID and vowel.endswith("aχ"):
-        consonant = "∅"
-        vowel = "aχ"
-    # Plain "aχ" chunk (ח -> "aχ"): consonant is already embedded in vowel token
-    if vowel == "aχ":
-        consonant = "∅"
-
-    # Validate — fall back to ∅ if unknown
-    if consonant not in CONSONANT_TO_ID:
-        consonant = "∅"
-    if vowel not in VOWEL_TO_ID:
-        vowel = "∅"
-
-    return (consonant, vowel, stress)
+    nfd = unicodedata.normalize("NFD", vocalized)
+    result: dict[int, str] = {}
+    bare_pos = 0
+    i = 0
+    while i < len(nfd):
+        ch = nfd[i]
+        i += 1
+        # collect combining marks
+        combining: list[str] = []
+        while i < len(nfd) and unicodedata.category(nfd[i]).startswith("M"):
+            combining.append(nfd[i])
+            i += 1
+        if is_hebrew_letter(ch):
+            if ch == SHIN_LETTER:
+                for c in combining:
+                    if c in SHIN_TO_ID:
+                        result[bare_pos] = c
+                        break
+            bare_pos += 1
+    return result
 
 
-def process_sentence(
-    hebrew: str,
-    alignment: list[list[str]],
-    tokenizer,
-) -> dict | None:
+def build_token_labels(bare: str, pairs: list[list[str]], vocalized: str, tokenizer) -> dict | None:
     """
-    Tokenize the Hebrew sentence and align per-character labels to token positions.
-    Returns None if tokenization produces unexpected token count.
+    Tokenize bare Hebrew and assign per-token nikud + shin labels.
+    pairs: list of [char, nikud_label] from the JSONL.
+    vocalized: original vocalized text (used to extract shin dot positions).
     """
+    shin_map = _extract_shin(vocalized)
+
     encoding = tokenizer(
-        hebrew,
+        bare,
         truncation=True,
         max_length=512,
         return_offsets_mapping=True,
         return_tensors=None,
     )
-
     input_ids = encoding["input_ids"]
     attention_mask = encoding["attention_mask"]
     offset_mapping = encoding["offset_mapping"]
-
     seq_len = len(input_ids)
-    consonant_labels = [IGNORE_INDEX] * seq_len
-    vowel_labels = [IGNORE_INDEX] * seq_len
-    stress_labels = [IGNORE_INDEX] * seq_len
 
-    # Build char_index -> (consonant, vowel, stress) from alignment.
-    # The alignment pairs only contain Hebrew letters and spaces (punctuation,
-    # digits, Latin chars were stripped by the aligner), so we walk the original
-    # sentence to get correct offsets for the tokenizer's offset_mapping.
-    char_labels: dict[int, tuple[str, str, int]] = {}
-    align_iter = iter(alignment)
-    for char_pos, orig_char in enumerate(hebrew):
-        if not is_hebrew_letter(orig_char) and orig_char != " ":
-            continue  # punctuation/digit/Latin — not in alignment, skip
+    nikud_labels = [IGNORE_INDEX] * seq_len
+    shin_labels = [IGNORE_INDEX] * seq_len
+
+    # Map bare char position -> (nikud_label, shin_label_or_None)
+    char_to_nikud: dict[int, str] = {}
+    pair_iter = iter(pairs)
+    heb_pos = 0
+    for char_pos, ch in enumerate(bare):
+        if not is_hebrew_letter(ch):
+            continue
         try:
-            align_char, chunk = next(align_iter)
+            _, nikud_label = next(pair_iter)
         except StopIteration:
             break
-        if is_hebrew_letter(orig_char):
-            char_labels[char_pos] = parse_ipa_chunk(chunk)
+        char_to_nikud[char_pos] = nikud_label
+        heb_pos += 1
 
-    # Map token positions to char positions using offset_mapping
     for tok_idx, (start, end) in enumerate(offset_mapping):
         if end - start != 1:
-            # CLS, SEP, or multi-char token — ignore
             continue
-        char_idx = start
-        if char_idx in char_labels:
-            consonant, vowel, stress = char_labels[char_idx]
-            consonant_labels[tok_idx] = CONSONANT_TO_ID.get(consonant, IGNORE_INDEX)
-            vowel_labels[tok_idx] = VOWEL_TO_ID.get(vowel, IGNORE_INDEX)
-            stress_labels[tok_idx] = stress
-        elif not is_hebrew_letter(hebrew[char_idx]) and hebrew[char_idx] != " ":
-            # Non-Hebrew, non-space char (e.g. apostrophe in ג'/צ'/ז') — train model to emit nothing
-            consonant_labels[tok_idx] = CONSONANT_TO_ID["∅"]
-            vowel_labels[tok_idx] = VOWEL_TO_ID["∅"]
-            stress_labels[tok_idx] = STRESS_NONE
+        if start not in char_to_nikud:
+            continue
+        nikud_label = char_to_nikud[start]
+        nikud_labels[tok_idx] = NIKUD_TO_ID.get(nikud_label, IGNORE_INDEX)
+
+        shin_dot = shin_map.get(start)
+        if shin_dot is not None:
+            shin_labels[tok_idx] = SHIN_TO_ID.get(shin_dot, IGNORE_INDEX)
 
     return {
         "input_ids": input_ids,
         "attention_mask": attention_mask,
-        "consonant_labels": consonant_labels,
-        "vowel_labels": vowel_labels,
-        "stress_labels": stress_labels,
+        "nikud_labels": nikud_labels,
+        "shin_labels": shin_labels,
     }
 
 
@@ -165,7 +120,6 @@ def main():
     args = parser.parse_args()
 
     tokenizer = load_encoder_tokenizer()
-
     records = []
     skipped = 0
 
@@ -177,9 +131,11 @@ def main():
         if not line:
             continue
         obj = json.loads(line)
-        hebrew, alignment = next(iter(obj.items()))
-
-        record = process_sentence(hebrew, alignment, tokenizer)
+        bare, pairs = next(iter(obj.items()))
+        # pairs is [[char, nikud_label], ...]
+        # We don't have the original vocalized text here, so reconstruct shin from pairs
+        # (shin info is not in pairs — re-derive from bare only if needed)
+        record = build_token_labels(bare, pairs, bare, tokenizer)
         if record is None:
             skipped += 1
             continue

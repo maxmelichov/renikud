@@ -10,19 +10,9 @@ from transformers import PreTrainedTokenizerFast
 from constants import ENCODER_MODEL
 
 
-def unwrap_encoder_model(encoder):
-    """Unwrap Dicta's diacritization model wrapper when present."""
-    return encoder.bert if hasattr(encoder, "bert") else encoder
-
-
 @lru_cache(maxsize=1)
-def load_encoder_tokenizer(model_name: str = ENCODER_MODEL) -> PreTrainedTokenizerFast:
-    """
-    Load the encoder tokenizer securely.
-    Bypasses the broken AutoTokenizer logic for character-level models.
-    """
+def load_tokenizer(model_name: str = ENCODER_MODEL) -> PreTrainedTokenizerFast:
     tokenizer_file = hf_hub_download(repo_id=model_name, filename="tokenizer.json")
-
     return PreTrainedTokenizerFast(
         tokenizer_file=tokenizer_file,
         unk_token="[UNK]",
