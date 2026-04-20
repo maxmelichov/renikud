@@ -13,7 +13,7 @@ VOWEL_NONE: Final[str] = "∅"
 VOWELS: Final[tuple[str, ...]] = (VOWEL_NONE, "a", "e", "i", "o", "u", "aχ")
 VOWEL_TO_ID: Final[dict[str, int]] = {v: i for i, v in enumerate(VOWELS)}
 ID_TO_VOWEL: Final[dict[int, str]] = {i: v for i, v in enumerate(VOWELS)}
-NUM_VOWEL_CLASSES: Final[int] = len(VOWELS)
+NUM_VOWEL_CLASSES: Final[int] = len(VOWELS) # 7
 
 # ---------------------------------------------------------------------------
 # 2. Consonant vocabulary
@@ -27,7 +27,7 @@ CONSONANTS: Final[tuple[str, ...]] = (
 )
 CONSONANT_TO_ID: Final[dict[str, int]] = {c: i for i, c in enumerate(CONSONANTS)}
 ID_TO_CONSONANT: Final[dict[int, str]] = {i: c for i, c in enumerate(CONSONANTS)}
-NUM_CONSONANT_CLASSES: Final[int] = len(CONSONANTS)
+NUM_CONSONANT_CLASSES: Final[int] = len(CONSONANTS) # 27
 
 # ---------------------------------------------------------------------------
 # 3. Stress vocabulary

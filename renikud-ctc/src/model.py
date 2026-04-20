@@ -32,9 +32,7 @@ class HebrewG2PCTC(nn.Module):
         if upsample_factor < 1:
             raise ValueError("upsample_factor must be >= 1")
 
-        from transformers import AutoConfig
-        config = AutoConfig.from_pretrained(encoder_model, trust_remote_code=True)
-        encoder = AutoModel.from_config(config, trust_remote_code=True)
+        encoder = AutoModel.from_pretrained(encoder_model, trust_remote_code=True)
         self.encoder = unwrap_encoder_model(encoder)
         self.upsample_factor = upsample_factor
 

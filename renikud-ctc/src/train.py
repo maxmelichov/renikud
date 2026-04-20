@@ -49,6 +49,16 @@ def save_checkpoint(model: torch.nn.Module, output_dir: Path, global_step: int, 
         shutil.rmtree(checkpoints.pop(0))
 
 
+def save_best_checkpoint(model: torch.nn.Module, output_dir: Path, global_step: int, metrics: dict):
+    best_ckpt_dir = output_dir / "checkpoint-best"
+    best_ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    from safetensors.torch import save_file
+
+    save_file(model.state_dict(), str(best_ckpt_dir / "model.safetensors"))
+    (best_ckpt_dir / "train_state.json").write_text(json.dumps({"step": global_step, **metrics}))
+
+
 def evaluate(model: torch.nn.Module, eval_loader: DataLoader, device: torch.device, fp16: bool) -> dict:
     model.eval()
     all_logits, all_lengths, all_labels = [], [], []
@@ -194,6 +204,17 @@ def main():
                             "acc": metrics["acc"],
                             "eval_loss": metrics["eval_loss"],
                         }
+                        save_best_checkpoint(
+                            model,
+                            output_dir,
+                            opt_step,
+                            {
+                                "wer": metrics["wer"],
+                                "cer": metrics["cer"],
+                                "acc": metrics["acc"],
+                                "eval_loss": metrics["eval_loss"],
+                            },
+                        )
                         no_improve_count = 0
                         print(f"  [checkpoint-best updated at step {opt_step}] [patience: {no_improve_count}/{args.early_stopping_patience}]")
                     else:
