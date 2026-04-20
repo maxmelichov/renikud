@@ -35,6 +35,8 @@ See `renikud-onnx/README.md` for the same install / download / usage flow. For R
 
 See `docs/ARCHITECTURE.md` for model design and implementation details.
 
+Classifier is the method we developed using three heads that classify each Hebrew letter's consonant, vowel, and stress.
+
 ## Training
 
 See `docs/TRAINING.md` for data preparation, training commands, upload/download, ONNX export, benchmark, and hyperparameters.
