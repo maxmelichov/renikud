@@ -5,11 +5,11 @@
 set -euo pipefail
 
 uv run src/train.py \
-  --train-dataset  /home/maxm/renikud/dataset/pairs_filtered.tsv \
+  --train-dataset  /home/maxm/renikud/dataset/knesset_phonemes_v1.txt \
   --eval-dataset   /home/maxm/renikud/dataset/gt.tsv \
-  --output-dir     outputs/knesset-classifier-vox \
-  --train-batch-size 128 \
-  --eval-batch-size  128 \
+  --output-dir     outputs/knesset-classifier-phonikud \
+  --train-batch-size 64 \
+  --eval-batch-size  64 \
   --epochs         1000 \
   --encoder-lr     2e-5 \
   --head-lr        1e-4 \

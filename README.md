@@ -1,42 +1,24 @@
-# renikud
+# Best Classifier on Vox Knesset
 
-Hebrew grapheme-to-phoneme (G2P) model that converts unvocalized text to IPA.
+This repository stores the best checkpoint of our Hebrew G2P classifier model.
 
-🤗 Model: [thewh1teagle/renikud](https://huggingface.co/thewh1teagle/renikud)
+## Files
 
-## Features
+- `best Classifier on vox knesset/model.safetensors`  
+  The trained model weights.
 
-- Context-aware Hebrew G2P (text → IPA)
-- Letter-level constrained decoding
-- Passthrough for non-Hebrew text
-- Runs on ONNX Runtime (no PyTorch)
-- ~20 MB, real-time inference
+- `best Classifier on vox knesset/train_state.json`  
+  The saved training step and validation metrics for this best checkpoint.
 
-## Usage
+- `best Classifier on vox knesset/README.md`  
+  A short explanation of this checkpoint folder.
 
-Inference is published as **`renikud-onnx`** on PyPI. Install and download the ONNX weights from Hugging Face (they are not bundled with the wheel):
+## What the weights do
 
-```console
-pip install renikud-onnx
-wget https://huggingface.co/thewh1teagle/renikud/resolve/main/model.onnx -O model.onnx
-```
+The model predicts, for each Hebrew letter:
 
-```python
-from renikud_onnx import G2P
+1. consonant
+2. vowel (nikud)
+3. stress
 
-g2p = G2P("model.onnx")
-print(g2p.phonemize("שלום עולם"))
-# → ʃalˈom ʔolˈam
-```
-
-See `renikud-onnx/README.md` for the same install / download / usage flow. For Rust inference, see `renikud-rs/`.
-
-## Architecture
-
-See `docs/ARCHITECTURE.md` for model design and implementation details.
-
-Classifier is the method we developed using three heads that classify each Hebrew letter's consonant, vowel, and stress.
-
-## Training
-
-See `docs/TRAINING.md` for data preparation, training commands, upload/download, ONNX export, benchmark, and hyperparameters.
+These 3 predictions are combined into the final IPA pronunciation output.
